@@ -14,6 +14,7 @@ from sklearn.base import clone
 
 import lightgbm as lgb
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 import mlflow, mlflow.sklearn
 from mlflow.tracking import MlflowClient
@@ -67,8 +68,10 @@ def get_estimator(cfg: Config):
         return lgb.LGBMClassifier(**cfg.model["lgbm"])
     elif cfg.model["type"] == "logreg":
         return LogisticRegression(**cfg.model["logreg"])
+    elif cfg.model["type"] == "rf":
+        return RandomForestClassifier(**cfg["model"]["rf"])
     else:
-        raise ValueError("model.type doit être 'lgbm' ou 'logreg'")
+        raise ValueError(f"Unknown model.type: {cfg.model["type"]}")
 
 def setup_mlflow(cfg: Config):
     tracking_uri = os.getenv(cfg.mlflow["tracking_uri_env"], cfg.mlflow["default_tracking_uri"])
