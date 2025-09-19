@@ -71,7 +71,7 @@ def get_estimator(cfg: Config):
     elif cfg.model["type"] == "rf":
         return RandomForestClassifier(**cfg["model"]["rf"])
     else:
-        raise ValueError(f"Unknown model.type: {cfg.model["type"]}")
+        raise ValueError(f"Unknown model.type: {cfg.model}")
 
 def setup_mlflow(cfg: Config):
     tracking_uri = os.getenv(cfg.mlflow["tracking_uri_env"], cfg.mlflow["default_tracking_uri"])
