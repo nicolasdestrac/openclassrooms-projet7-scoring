@@ -9,6 +9,7 @@ cv:
   shuffle: true
   random_state: 42
   early_stopping_rounds: 200
+  log_period: 50
 
 # Coûts métier (FN >>> FP)
 cost:

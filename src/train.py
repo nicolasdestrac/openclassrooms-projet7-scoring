@@ -23,6 +23,12 @@ from .data import load_raw, ensure_dirs
 from .features import make_train_test
 from .metrics import evaluate_all
 
+def cfg_get(cfg, key, default=None):
+    """Accède à cfg[key] que cfg soit un dict ou un objet à attributs."""
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
 @dataclass
 class Config:
     data: dict
@@ -97,14 +103,21 @@ def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Co
 
         est = clone(estimator)
         if isinstance(est, lgb.LGBMClassifier):
-            callbacks = [lgb.log_evaluation(period=0)]  # coupe les logs
-            esr = cfg.get("fit", {}).get("early_stopping_rounds", 200)
+            cv_cfg = cfg_get(cfg, "cv", {})
+            esr = int(cfg_get(cv_cfg, "early_stopping_rounds", 200))
+            log_period = int(cfg_get(cv_cfg, "log_period", 50))
+
+            callbacks = [
+                lgb.early_stopping(stopping_rounds=esr),
+                lgb.log_evaluation(period=log_period),
+            ]
+
             if esr:
                 callbacks.append(lgb.early_stopping(stopping_rounds=esr, verbose=False))
 
             est.fit(
                 X_tr, y_tr,
-                eval_set=[(X_va, y_va)],       # seulement la validation pour l’ES
+                eval_set=[(X_va, y_va)],
                 eval_metric="auc",
                 callbacks=callbacks,
             )
