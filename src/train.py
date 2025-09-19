@@ -97,13 +97,18 @@ def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Co
 
         est = clone(estimator)
         if isinstance(est, lgb.LGBMClassifier):
+            callbacks = [lgb.log_evaluation(period=0)]  # coupe les logs
+            esr = cfg.get("fit", {}).get("early_stopping_rounds", 200)
+            if esr:
+                callbacks.append(lgb.early_stopping(stopping_rounds=esr, verbose=False))
+
             est.fit(
                 X_tr, y_tr,
-                eval_set=[(X_va, y_va)],
+                eval_set=[(X_va, y_va)],       # seulement la validation pour l’ES
                 eval_metric="auc",
-                verbose=False,
-                early_stopping_rounds=cfg.cv["early_stopping_rounds"]
+                callbacks=callbacks,
             )
+
             n_best = int(getattr(est, "best_iteration_", est.n_estimators_))
             best_iters.append(n_best)
             prob_va = est.predict_proba(X_va, num_iteration=n_best)[:, 1]
