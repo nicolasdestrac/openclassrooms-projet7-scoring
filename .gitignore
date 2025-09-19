@@ -1,0 +1,17 @@
+# Data & artefacts
+data/raw/*
+data/interim/*
+data/processed/*
+models/*
+reports/*
+mlruns/
+mlflow.db
+pdf/*
+
+# Env & locaux
+.venv/
+.env
+.python-version
+**/__pycache__/
+.ipynb_checkpoints/
+.DS_Store

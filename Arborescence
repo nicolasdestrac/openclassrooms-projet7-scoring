@@ -1,0 +1,29 @@
+projet7_scoring/
+│
+├── notebooks/
+│   ├── 01_EDA.ipynb
+│   ├── 02_Preprocessing_FeatureEngineering.ipynb
+│   ├── 03_Modelisation.ipynb
+│   ├── 04_Optimisation_MetriqueMetier.ipynb
+│   ├── 05_Explicabilite.ipynb
+│   └── 06_Drift_Evidently.ipynb
+│
+├── api/
+│   ├── main.py            # API FastAPI/Flask
+│   ├── model_loader.py    # Chargement du modèle
+│   └── requirements.txt
+│
+├── tests/
+│   └── test_api.py        # Pytest
+│
+├── mlruns/                # MLflow auto
+├── data/
+│   ├── application_train.csv
+│   └── application_test.csv
+│
+├── .github/workflows/
+│   └── ci_cd.yml          # pipeline GitHub Actions
+│
+├── README.md
+└── requirements.txt
+
