@@ -1,0 +1,51 @@
+# Données
+data:
+  train_csv: "data/raw/application_train.csv"
+  test_csv:  "data/raw/application_test.csv"
+
+# Split & CV
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  early_stopping_rounds: 200
+
+# Coûts métier (FN >>> FP)
+cost:
+  fn: 10.0
+  fp: 1.0
+  threshold_grid: 501   # nb de points entre 0 et 1
+
+# Modèle à entraîner: "lgbm" ou "logreg"
+model:
+  type: "lgbm"
+  lgbm:
+    n_estimators: 5000        # early stopping décide
+    learning_rate: 0.03
+    num_leaves: 64
+    max_depth: -1
+    min_child_samples: 100
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_lambda: 1.0
+    reg_alpha: 0.1
+    class_weight: "balanced"
+    n_jobs: -1
+  logreg:
+    penalty: "l2"
+    solver: "saga"
+    max_iter: 2000
+    class_weight: "balanced"
+    n_jobs: -1
+
+# MLflow (remote Databricks)
+mlflow:
+  tracking_uri_env: "MLFLOW_TRACKING_URI"                # laisse vide si déjà exporté
+  default_tracking_uri: "databricks"
+  experiment_env: "MLFLOW_EXPERIMENT"
+  default_experiment: "/Users/nicolas.destrac@gmail.com/projet7_scoring"
+
+# Sorties locales (seront uploadées en artifacts)
+artifacts:
+  models_dir: "models"
+  reports_dir: "reports"
