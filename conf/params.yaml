@@ -5,7 +5,7 @@ data:
 
 # Split & CV
 cv:
-  n_splits: 2
+  n_splits: 5
   shuffle: true
   random_state: 42
   early_stopping_rounds: 200
