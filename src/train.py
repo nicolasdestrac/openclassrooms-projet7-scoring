@@ -15,6 +15,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.base import clone
 from sklearn.metrics import roc_auc_score
+from sklearn.exceptions import ConvergenceWarning
 
 import lightgbm as lgb
 from sklearn.linear_model import LogisticRegression
@@ -29,9 +30,26 @@ from .features import make_train_test
 from .metrics import evaluate_all
 
 import logging
+import warnings
+from dataclasses import dataclass
+
+# --- Filtres de warnings ---
+# 1) Sklearn: "X does not have valid feature names..."
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module="sklearn.utils.validation",
+    message=r"X does not have valid feature names, but .* was fitted with feature names",
+)
+
+# 2) Sklearn: ConvergenceWarning (ex: logreg)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+# 3) LightGBM logger Python (le cœur C++ loggue via stdout; on réduit le logger Python)
 logging.getLogger("lightgbm").setLevel(logging.ERROR)
 
 _BAD_CHARS = re.compile(r'[^0-9A-Za-z_]+')
+_SENTINEL = object()
 
 def make_lgbm_safe(names):
     # remplace tous les caractères non [A-Za-z0-9_] par "_", compacte et déduplique
@@ -45,11 +63,16 @@ def make_lgbm_safe(names):
         seen[s] = i + 1
     return out
 
-def cfg_get(cfg, key, default=None):
-    """Accède à cfg[key] que cfg soit un dict ou un objet à attributs."""
-    if isinstance(cfg, dict):
-        return cfg.get(key, default)
-    return getattr(cfg, key, default)
+def cfg_get(obj, dotted_key: str, default=None):
+    cur = obj
+    for part in dotted_key.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(part, _SENTINEL)
+        else:
+            cur = getattr(cur, part, _SENTINEL)
+        if cur is _SENTINEL:
+            return default
+    return cur
 
 @dataclass
 class Config:
