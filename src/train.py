@@ -238,6 +238,10 @@ def main(config_path: str = "conf/params.yaml"):
                    "cost_fp": cfg.cost["fp"]}, f)
 
     # MLflow logging
+    if mlflow.active_run() is not None:
+        print(f"Ending stray active run: {mlflow.active_run().info.run_id}")
+        mlflow.end_run()
+
     with mlflow.start_run(run_name=f"{cfg.model['type']}_oof_remote") as run:
         # params
         mlflow.log_param("model_type", cfg.model["type"])
