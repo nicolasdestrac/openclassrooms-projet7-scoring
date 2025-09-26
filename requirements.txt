@@ -29,3 +29,5 @@ pytest>=7.4.0
 jupyterlab>=4.0.0
 notebook>=7.0.0
 
+# Data
+kaggle>=1.6

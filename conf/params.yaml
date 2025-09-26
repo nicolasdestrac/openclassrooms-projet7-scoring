@@ -9,6 +9,7 @@ cv:
   shuffle: true
   random_state: 42
   early_stopping_rounds: 200
+  log_period: 100
 
 # Coûts métier (FN >>> FP)
 cost:
@@ -20,7 +21,7 @@ cost:
 model:
   type: "lgbm"
   lgbm:
-    n_estimators: 5000        # early stopping décide
+    n_estimators: 5000
     learning_rate: 0.03
     num_leaves: 64
     max_depth: -1
@@ -31,16 +32,25 @@ model:
     reg_alpha: 0.1
     class_weight: "balanced"
     n_jobs: -1
+    verbosity: -1
   logreg:
     penalty: "l2"
     solver: "saga"
     max_iter: 2000
     class_weight: "balanced"
     n_jobs: -1
+  rf:
+    n_estimators: 500
+    max_depth: null
+    min_samples_leaf: 1
+    max_features: "sqrt"
+    class_weight: "balanced"
+    n_jobs: -1
+    random_state: 42
 
 # MLflow (remote Databricks)
 mlflow:
-  tracking_uri_env: "MLFLOW_TRACKING_URI"                # laisse vide si déjà exporté
+  tracking_uri_env: "MLFLOW_TRACKING_URI"
   default_tracking_uri: "databricks"
   experiment_env: "MLFLOW_EXPERIMENT"
   default_experiment: "/Users/nicolas.destrac@gmail.com/projet7_scoring"
