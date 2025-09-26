@@ -4,6 +4,9 @@ from pathlib import Path
 import yaml
 import numpy as np
 import pandas as pd
+from time import perf_counter
+from tqdm import tqdm
+import re
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -11,6 +14,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.base import clone
+from sklearn.metrics import roc_auc_score
 
 import lightgbm as lgb
 from sklearn.linear_model import LogisticRegression
@@ -23,6 +27,23 @@ from mlflow.models import infer_signature
 from .data import load_raw, ensure_dirs
 from .features import make_train_test
 from .metrics import evaluate_all
+
+import logging
+logging.getLogger("lightgbm").setLevel(logging.ERROR)
+
+_BAD_CHARS = re.compile(r'[^0-9A-Za-z_]+')
+
+def make_lgbm_safe(names):
+    # remplace tous les caractères non [A-Za-z0-9_] par "_", compacte et déduplique
+    cleaned = [ _BAD_CHARS.sub('_', str(n)) for n in names ]
+    cleaned = [ re.sub(r'_+', '_', s).strip('_') for s in cleaned ]
+    seen = {}
+    out = []
+    for s in cleaned:
+        i = seen.get(s, 0)
+        out.append(s if i == 0 else f"{s}__{i}")
+        seen[s] = i + 1
+    return out
 
 def cfg_get(cfg, key, default=None):
     """Accède à cfg[key] que cfg soit un dict ou un objet à attributs."""
@@ -69,7 +90,7 @@ def get_estimator(cfg: Config):
     elif cfg.model["type"] == "logreg":
         return LogisticRegression(**cfg.model["logreg"])
     elif cfg.model["type"] == "rf":
-        return RandomForestClassifier(**cfg["model"]["rf"])
+        return RandomForestClassifier(**cfg.model["rf"])
     else:
         raise ValueError(f"Unknown model.type: {cfg.model}")
 
@@ -89,34 +110,46 @@ def setup_mlflow(cfg: Config):
 
 def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Config):
     skf = StratifiedKFold(
-        n_splits=cfg.cv["n_splits"],
-        shuffle=cfg.cv.get("shuffle", True),
-        random_state=cfg.cv.get("random_state", 42)
+        n_splits=cfg_get(cfg, "cv.n_splits", 5),
+        shuffle=cfg_get(cfg, "cv.shuffle", True),
+        random_state=cfg_get(cfg, "cv.random_state", 42),
     )
+
     oof_prob = np.zeros(len(y), dtype=float)
     fold_rows = []
     best_iters = []
 
-    for fold, (tr_idx, va_idx) in enumerate(skf.split(X, y), 1):
+    for fold, (tr_idx, va_idx) in enumerate(
+        tqdm(skf.split(X, y), total=skf.get_n_splits(), desc="CV folds"), 1
+    ):
+        # fit/transform
         prep = clone(preprocessor).fit(X.iloc[tr_idx], y.iloc[tr_idx])
-        X_tr = prep.transform(X.iloc[tr_idx])
-        X_va = prep.transform(X.iloc[va_idx])
+        try:
+            raw_feat_names = prep.get_feature_names_out()
+        except Exception:
+            raw_feat_names = [f"f_{i}" for i in range(prep.transform(X.iloc[tr_idx]).shape[1])]
+        feat_names = make_lgbm_safe(raw_feat_names)
+
+        X_tr_arr = prep.transform(X.iloc[tr_idx])
+        X_va_arr = prep.transform(X.iloc[va_idx])
+
+        # re-wrap en DataFrame avec noms nettoyés
+        X_tr = pd.DataFrame(X_tr_arr, index=X.index[tr_idx], columns=feat_names)
+        X_va = pd.DataFrame(X_va_arr, index=X.index[va_idx], columns=feat_names)
         y_tr = y.iloc[tr_idx].to_numpy()
         y_va = y.iloc[va_idx].to_numpy()
 
         est = clone(estimator)
+        t0 = perf_counter()
+
         if isinstance(est, lgb.LGBMClassifier):
-            cv_cfg = cfg_get(cfg, "cv", {})
-            esr = int(cfg_get(cv_cfg, "early_stopping_rounds", 200))
-            log_period = int(cfg_get(cv_cfg, "log_period", 50))
+            esr = int(cfg_get(cfg, "cv.early_stopping_rounds", 200))
+            log_period = int(cfg_get(cfg, "cv.log_period", 50))
 
             callbacks = [
-                lgb.early_stopping(stopping_rounds=esr),
+                lgb.early_stopping(stopping_rounds=esr, verbose=True),
                 lgb.log_evaluation(period=log_period),
             ]
-
-            if esr:
-                callbacks.append(lgb.early_stopping(stopping_rounds=esr, verbose=False))
 
             est.fit(
                 X_tr, y_tr,
@@ -132,15 +165,31 @@ def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Co
             est.fit(X_tr, y_tr)
             prob_va = est.predict_proba(X_va)[:, 1]
 
+        fit_secs = perf_counter() - t0
         oof_prob[va_idx] = prob_va
 
+        # métriques fold
+        fold_auc = roc_auc_score(y_va, prob_va)
+        mlflow.log_metric(f"fold_{fold}_auc", fold_auc)
+        mlflow.log_metric(f"fold_{fold}_fit_secs", fit_secs)
+
+        # pour logreg, log du nombre d'itérations si dispo
+        if hasattr(est, "n_iter_"):
+            n_iter = est.n_iter_
+            if hasattr(n_iter, "__len__"):
+                n_iter = n_iter[0]
+            mlflow.log_metric(f"fold_{fold}_n_iter", int(n_iter))
+
+        # métriques métier
         from .metrics import evaluate_all
         m = evaluate_all(y_va, prob_va, cfg.cost["fn"], cfg.cost["fp"], cfg.cost["threshold_grid"])
         m.update({"fold": fold})
         fold_rows.append(m)
 
+        print(f"Fold {fold}: AUC={fold_auc:.4f}, secs={fit_secs:.1f}")
+
     fold_df = pd.DataFrame(fold_rows)
-    best_iter_median = int(np.median(best_iters)) if len(best_iters) else None
+    best_iter_median = int(np.median(best_iters)) if best_iters else None
     return oof_prob, fold_df, best_iter_median
 
 def fit_final_pipeline(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, best_iter_median: int | None):
@@ -219,7 +268,7 @@ def main(config_path: str = "conf/params.yaml"):
         except Exception:
             pass
 
-        mlflow.sklearn.log_model(final_pipe, artifact_path="model", signature=signature)
+        mlflow.sklearn.log_model(final_pipe, name="model", signature=signature)
 
     print("✅ Run MLflow terminé | AUC OOF={:.4f} | Seuil*={:.3f} | Coût={:.0f} | Coût/10k={:.1f}"
           .format(m_oof["auc"], m_oof["best_threshold"], m_oof["business_cost"], m_oof["business_cost_per10k"]))
