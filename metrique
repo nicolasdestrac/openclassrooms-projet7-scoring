@@ -1,0 +1,95 @@
+yes — voilà une version “simple à expliquer” de ta métrique spécifique (business cost) pour ton entretien 👇
+
+1) L’idée en une phrase
+
+On traduit les erreurs du modèle en € (ou points de coût), en pénalisant beaucoup plus une mauvaise acceptation (faux négatif: FN) qu’un refus à tort (faux positif: FP).
+Chez toi: 1 FN = 10 FP (ratio 10:1), parce qu’accorder un prêt risqué coûte bien plus cher que rater un bon client.
+
+2) Pourquoi on en a besoin
+
+Les métriques classiques (AUC, F1, etc.) ne savent pas combien coûte une erreur.
+
+La banque, elle, s’en fiche d’un “0.76 d’AUC” si ça ne dit pas l’impact business.
+
+Ta métrique aligne le modèle sur l’objectif réel: minimiser la perte financière.
+
+3) Comment on calcule (très concret)
+
+Pour un seuil de décision 
+t
+t (ex: 0.50), on fait une matrice de confusion:
+
+FN: on a accepté un client qui ne remboursera pas → coût fort (ici 10).
+
+FP: on a refusé un bon client → coût faible (ici 1).
+
+Formule :
+
+business_cost(t)=10×FN(t)  +  1×FP(t)
+business_cost(t)=10×FN(t)+1×FP(t)
+
+On balaye beaucoup de seuils (chez toi 501 points entre 0 et 1) et on prend le seuil qui minimise ce coût.
+
+On logge aussi une version normalisée “par 10 000 décisions” :
+
+cost_per10k(t)=business_cost(t)×10 000N
+cost_per10k(t)=business_cost(t)×
+N
+10000
+	​
+
+
+(pratique pour comparer des runs de tailles différentes)
+
+4) Exemple chiffré (fictif pour illustrer)
+
+À 
+t=0.40
+t=0.40: FN=1 800, FP=6 000 → coût = 1 800×10 + 6 000×1 = 24 000
+
+À 
+t=0.55
+t=0.55: FN=1 200, FP=9 000 → coût = 1 200×10 + 9 000×1 = 21 000
+→ On préfère 
+t=0.55
+t=0.55 (coût plus bas), même si on a plus de refus à tort, car on évite surtout des défauts coûteux.
+
+5) Ce que tu peux dire sur tes résultats actuels
+
+Sur ton run LightGBM, on trouve un seuil optimal ≈ 0.496 (selon l’OOF).
+
+Coût total (sur l’OOF) ≈ 159 816, Coût/10k ≈ 5 197.
+→ C’est une estimation “out-of-fold”, donc plus fiable que le simple train/valid.
+
+6) Points de discussion “métier” (très utiles en entretien)
+
+Le ratio 10:1 est un paramètre business. On peut le recalibrer (ex: 15:1 si la conjoncture se dégrade) et regénérer le seuil optimal.
+
+Le seuil optimal ≠ class_weight:
+
+class_weight aide l’entraînement sur données déséquilibrées.
+
+Le seuil est une décision post-entraînement optimisée pour le coût.
+
+Stabilité: si la prévalence (taux de défaut) change dans le temps, le seuil optimal peut bouger → prévoir un recalibrage périodique.
+
+Calibration des proba: meilleure calibration = meilleur choix de seuil. On peut surveiller Brier score / calibration curve.
+
+Segmentation: on peut optimiser un seuil par segment (ex: pros vs particuliers) si le ratio coût/risque varie.
+
+7) Comment la présenter à des non-technos
+
+“Notre modèle prend une décision en fonction d’un seuil. À chaque seuil, on sait combien ça coûte en moyenne:
+− accepter à tort un client risqué coûte beaucoup (10 unités),
+− refuser à tort un bon client coûte moins (1 unité).
+On choisit donc le seuil qui minimise la facture totale. Aujourd’hui, ce seuil est ~0.50 et il nous amène à ~5 200 d’unités de coût par 10 000 dossiers. Si le contexte change, on rejoue la courbe de coût et on ajuste le seuil.”
+
+8) Ce qu’il te restera à montrer facilement
+
+La courbe coût vs seuil (on l’a en interne, et on peut la tracer).
+
+Le seuil retenu, le coût associé, et quelques seuils voisins pour expliquer le compromis (ex: +X FP pour −Y FN).
+
+Un tableau de sensibilité si le ratio FN/FP passe de 8:1 à 12:1.
+
+Si tu veux, je te prépare un mini script pour exporter la courbe coût↔seuil et un petit tableau de sensibilité (ça fait toujours très pro en revue 👌).

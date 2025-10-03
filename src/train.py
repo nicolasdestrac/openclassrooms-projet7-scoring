@@ -1,12 +1,12 @@
-import os, json
+import os, json, re, logging, warnings
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
+
 import yaml
 import numpy as np
 import pandas as pd
-from time import perf_counter
 from tqdm import tqdm
-import re
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -17,46 +17,39 @@ from sklearn.base import clone
 from sklearn.metrics import roc_auc_score
 from sklearn.exceptions import ConvergenceWarning
 
-import lightgbm as lgb
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+import lightgbm as lgb
 
 import mlflow, mlflow.sklearn
 from mlflow.tracking import MlflowClient
 from mlflow.models import infer_signature
 
+# plots / explainability
+import matplotlib.pyplot as plt
+import shap
+
 from .data import load_raw, ensure_dirs
 from .features import make_train_test
 from .metrics import evaluate_all
 
-import logging
-import warnings
-from dataclasses import dataclass
-
-# --- Filtres de warnings ---
-# 1) Sklearn: "X does not have valid feature names..."
+# --- Warnings : on fait le ménage ---
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
     module="sklearn.utils.validation",
     message=r"X does not have valid feature names, but .* was fitted with feature names",
 )
-
-# 2) Sklearn: ConvergenceWarning (ex: logreg)
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
-
-# 3) LightGBM logger Python (le cœur C++ loggue via stdout; on réduit le logger Python)
 logging.getLogger("lightgbm").setLevel(logging.ERROR)
 
-_BAD_CHARS = re.compile(r'[^0-9A-Za-z_]+')
+_BAD_CHARS = re.compile(r"[^0-9A-Za-z_]+")
 _SENTINEL = object()
 
 def make_lgbm_safe(names):
-    # remplace tous les caractères non [A-Za-z0-9_] par "_", compacte et déduplique
-    cleaned = [ _BAD_CHARS.sub('_', str(n)) for n in names ]
-    cleaned = [ re.sub(r'_+', '_', s).strip('_') for s in cleaned ]
-    seen = {}
-    out = []
+    cleaned = [_BAD_CHARS.sub("_", str(n)) for n in names]
+    cleaned = [re.sub(r"_+", "_", s).strip("_") for s in cleaned]
+    seen, out = {}, []
     for s in cleaned:
         i = seen.get(s, 0)
         out.append(s if i == 0 else f"{s}__{i}")
@@ -82,8 +75,9 @@ class Config:
     model: dict
     mlflow: dict
     artifacts: dict
+    tuning: dict | None = None  # optionnel
 
-def read_config(path: str) -> Config:
+def read_config(path: str) -> "Config":
     with open(path, "r") as f:
         cfg = yaml.safe_load(f)
     return Config(**cfg)
@@ -139,24 +133,21 @@ def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Co
     )
 
     oof_prob = np.zeros(len(y), dtype=float)
-    fold_rows = []
-    best_iters = []
+    fold_rows, best_iters = [], []
 
-    for fold, (tr_idx, va_idx) in enumerate(
-        tqdm(skf.split(X, y), total=skf.get_n_splits(), desc="CV folds"), 1
-    ):
-        # fit/transform
+    for fold, (tr_idx, va_idx) in enumerate(tqdm(skf.split(X, y), total=skf.get_n_splits(), desc="CV folds"), 1):
         prep = clone(preprocessor).fit(X.iloc[tr_idx], y.iloc[tr_idx])
+
+        # noms de features + nettoyage pour LightGBM
         try:
             raw_feat_names = prep.get_feature_names_out()
         except Exception:
             raw_feat_names = [f"f_{i}" for i in range(prep.transform(X.iloc[tr_idx]).shape[1])]
         feat_names = make_lgbm_safe(raw_feat_names)
 
+        # data
         X_tr_arr = prep.transform(X.iloc[tr_idx])
         X_va_arr = prep.transform(X.iloc[va_idx])
-
-        # re-wrap en DataFrame avec noms nettoyés
         X_tr = pd.DataFrame(X_tr_arr, index=X.index[tr_idx], columns=feat_names)
         X_va = pd.DataFrame(X_va_arr, index=X.index[va_idx], columns=feat_names)
         y_tr = y.iloc[tr_idx].to_numpy()
@@ -167,20 +158,17 @@ def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Co
 
         if isinstance(est, lgb.LGBMClassifier):
             esr = int(cfg_get(cfg, "cv.early_stopping_rounds", 200))
-            log_period = int(cfg_get(cfg, "cv.log_period", 50))
-
+            log_period = int(cfg_get(cfg, "cv.log_period", 100))
             callbacks = [
-                lgb.early_stopping(stopping_rounds=esr, verbose=True),
+                lgb.early_stopping(stopping_rounds=esr, verbose=False),
                 lgb.log_evaluation(period=log_period),
             ]
-
             est.fit(
                 X_tr, y_tr,
                 eval_set=[(X_va, y_va)],
                 eval_metric="auc",
                 callbacks=callbacks,
             )
-
             n_best = int(getattr(est, "best_iteration_", est.n_estimators_))
             best_iters.append(n_best)
             prob_va = est.predict_proba(X_va, num_iteration=n_best)[:, 1]
@@ -191,24 +179,17 @@ def crossval_oof(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, cfg: Co
         fit_secs = perf_counter() - t0
         oof_prob[va_idx] = prob_va
 
-        # métriques fold
+        # métriques fold (dont métrique métier)
         fold_auc = roc_auc_score(y_va, prob_va)
-        mlflow.log_metric(f"fold_{fold}_auc", fold_auc)
-        mlflow.log_metric(f"fold_{fold}_fit_secs", fit_secs)
-
-        # pour logreg, log du nombre d'itérations si dispo
+        m = evaluate_all(y_va, prob_va, cfg.cost["fn"], cfg.cost["fp"], cfg.cost["threshold_grid"])
+        m.update({"fold": fold, "fit_secs": fit_secs})
         if hasattr(est, "n_iter_"):
             n_iter = est.n_iter_
             if hasattr(n_iter, "__len__"):
                 n_iter = n_iter[0]
-            mlflow.log_metric(f"fold_{fold}_n_iter", int(n_iter))
+            m["n_iter"] = int(n_iter)
 
-        # métriques métier
-        from .metrics import evaluate_all
-        m = evaluate_all(y_va, prob_va, cfg.cost["fn"], cfg.cost["fp"], cfg.cost["threshold_grid"])
-        m.update({"fold": fold})
         fold_rows.append(m)
-
         print(f"Fold {fold}: AUC={fold_auc:.4f}, secs={fit_secs:.1f}")
 
     fold_df = pd.DataFrame(fold_rows)
@@ -224,13 +205,73 @@ def fit_final_pipeline(X: pd.DataFrame, y: pd.Series, preprocessor, estimator, b
     pipe.fit(X, y)
     return pipe
 
+def plot_and_log_feature_importance(final_pipe, X: pd.DataFrame, models_dir: Path):
+    """Sauvegarde CSV + barplot des importances; SHAP pour LGBM."""
+    prep = final_pipe.named_steps["prep"]
+    clf = final_pipe.named_steps["clf"]
+
+    try:
+        feat_names = make_lgbm_safe(prep.get_feature_names_out())
+    except Exception:
+        feat_names = [f"f_{i}" for i in range(prep.transform(X.iloc[:5]).shape[1])]
+
+    # Importances globales (tree-based ou logreg)
+    if hasattr(clf, "feature_importances_"):
+        imp = np.asarray(clf.feature_importances_, dtype=float)
+    elif hasattr(clf, "coef_"):
+        coef = clf.coef_
+        imp = np.abs(coef[0]) if getattr(coef, "ndim", 1) > 1 else np.abs(coef)
+        imp = np.asarray(imp, dtype=float)
+    else:
+        imp = None
+
+    fi_csv = None
+    fi_png = None
+
+    if imp is not None and len(imp) == len(feat_names):
+        fi = (pd.DataFrame({"feature": feat_names, "importance": imp})
+                .sort_values("importance", ascending=False))
+        fi_csv = models_dir / "feature_importances.csv"
+        fi.to_csv(fi_csv, index=False)
+
+        top = fi.head(30).iloc[::-1]  # barh plus lisible
+        plt.figure(figsize=(8, 10))
+        plt.barh(top["feature"], top["importance"])
+        plt.title("Top 30 feature importances")
+        plt.tight_layout()
+        fi_png = models_dir / "feature_importances_top30.png"
+        plt.savefig(fi_png, dpi=150)
+        plt.close()
+
+    # SHAP (uniquement pour LGBM afin de rester rapide)
+    shap_png = None
+    if isinstance(clf, lgb.LGBMClassifier):
+        try:
+            Xs = X.sample(min(2000, len(X)), random_state=42)  # sous-échantillon
+            Xs_tr = prep.transform(Xs)
+            expl = shap.TreeExplainer(clf)
+            shap_values = expl(Xs_tr)
+            plt.figure()
+            shap.plots.beeswarm(shap_values, max_display=30, show=False)
+            shap_png = models_dir / "shap_beeswarm_top30.png"
+            plt.tight_layout()
+            plt.savefig(shap_png, dpi=150)
+            plt.close()
+        except Exception:
+            pass
+
+    # Log artifacts si présents
+    for p in [fi_csv, fi_png, shap_png]:
+        if p and Path(p).exists():
+            mlflow.log_artifact(str(p))
+
 def main(config_path: str = "conf/params.yaml"):
     cfg = read_config(config_path)
 
     # MLflow
     setup_mlflow(cfg)
 
-    # IO dirs
+    # IO
     ensure_dirs(cfg.artifacts["models_dir"], cfg.artifacts["reports_dir"])
 
     # Data
@@ -241,7 +282,7 @@ def main(config_path: str = "conf/params.yaml"):
     preprocessor = build_preprocessor(X)
     estimator = get_estimator(cfg)
 
-    # OOF
+    # OOF CV
     oof_prob, fold_df, best_iter_median = crossval_oof(X, y, preprocessor, estimator, cfg)
     m_oof = evaluate_all(y.to_numpy(), oof_prob, cfg.cost["fn"], cfg.cost["fp"], cfg.cost["threshold_grid"])
 
@@ -253,39 +294,59 @@ def main(config_path: str = "conf/params.yaml"):
     models_dir  = Path(cfg.artifacts["models_dir"])
     fold_path   = reports_dir / "cv_metrics_by_fold.csv"
     thr_path    = models_dir  / "decision_threshold.json"
+
     fold_df.to_csv(fold_path, index=False)
     with open(thr_path, "w") as f:
-        json.dump({"threshold": m_oof["best_threshold"],
-                   "source": "OOF",
-                   "cost_fn": cfg.cost["fn"],
-                   "cost_fp": cfg.cost["fp"]}, f)
+        json.dump(
+            {
+                "threshold": m_oof["threshold_opt"],
+                "source": "OOF",
+                "cost_fn": cfg.cost["fn"],
+                "cost_fp": cfg.cost["fp"],
+            },
+            f,
+        )
 
-    # MLflow logging
+    # MLflow run (sécurise un run propre)
     if mlflow.active_run() is not None:
         print(f"Ending stray active run: {mlflow.active_run().info.run_id}")
         mlflow.end_run()
 
-    with mlflow.start_run(run_name=f"{cfg.model['type']}_oof_remote") as run:
-        # params
+    with mlflow.start_run(run_name=f"{cfg.model['type']}_oof_remote"):
+        # Params
         mlflow.log_param("model_type", cfg.model["type"])
         for k, v in (cfg.model.get(cfg.model["type"], {}) or {}).items():
             mlflow.log_param(f"{cfg.model['type']}__{k}", v)
         mlflow.log_param("cv_n_splits", cfg.cv["n_splits"])
-        mlflow.log_param("early_stopping_rounds", cfg.cv["early_stopping_rounds"])
+        mlflow.log_param("early_stopping_rounds", cfg.cv.get("early_stopping_rounds", None))
         if best_iter_median:
             mlflow.log_param("best_iter_median", int(best_iter_median))
         mlflow.log_param("cost_fn", cfg.cost["fn"])
         mlflow.log_param("cost_fp", cfg.cost["fp"])
 
-        # metrics OOF
+        # Metrics OOF (préfixées "oof_")
         for k, v in m_oof.items():
-            mlflow.log_metric(f"oof_{k}", float(v))
+            if isinstance(v, (int, float, np.floating)):
+                mlflow.log_metric(f"oof_{k}", float(v))
 
-        # artifacts
+        # Log par fold (AUC, AP, Brier, KS, coût, seuil, temps, itérations… + business_score)
+        for _, r in fold_df.iterrows():
+            step = int(r["fold"])
+            for k in [
+                "auc", "ap", "brier", "ks",
+                "business_cost", "business_cost_per10k", "business_score",
+                "threshold_opt",
+                "fit_secs", "n_iter",
+            ]:
+                if k in r and pd.notnull(r[k]):
+                    mlflow.log_metric(f"fold_{k}", float(r[k]), step=step)
+
+        # Artifacts: CSV/JSON + importances/SHAP + modèle
         mlflow.log_artifact(str(fold_path))
         mlflow.log_artifact(str(thr_path))
+        plot_and_log_feature_importance(final_pipe, X, models_dir)
 
-        # signature d’input: échantillon réaliste (cast int -> float64 si NaN possibles)
+        # Signature & modèle
         Xs = X.iloc[:200].copy()
         int_cols = Xs.select_dtypes(include=["int64","int32"]).columns
         Xs[int_cols] = Xs[int_cols].astype("float64")
@@ -294,11 +355,14 @@ def main(config_path: str = "conf/params.yaml"):
             signature = infer_signature(Xs, final_pipe.predict_proba(Xs)[:, 1])
         except Exception:
             pass
-
         mlflow.sklearn.log_model(final_pipe, name="model", signature=signature)
 
-    print("✅ Run MLflow terminé | AUC OOF={:.4f} | Seuil*={:.3f} | Coût={:.0f} | Coût/10k={:.1f}"
-          .format(m_oof["auc"], m_oof["best_threshold"], m_oof["business_cost"], m_oof["business_cost_per10k"]))
+    print(
+        "✅ Run MLflow terminé | AUC OOF={:.4f} | Score={:.3f} | Seuil*={:.3f} | Coût={:.0f} | Coût/10k={:.1f}".format(
+            m_oof["auc"], m_oof["business_score"], m_oof["threshold_opt"],
+            m_oof["business_cost"], m_oof["business_cost_per10k"]
+        )
+    )
 
 if __name__ == "__main__":
     import argparse
