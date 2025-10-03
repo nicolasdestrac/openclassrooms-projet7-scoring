@@ -207,10 +207,10 @@ def main():
 
     # MLflow
     tracking_uri = cfg_get(cfg, "mlflow.default_tracking_uri", None) or os.getenv(
-        str(cfg_get(cfg, "mlflow.tracking_uri_env", "MLFLOW_TRACKING_URI")), None
+        str(cfg_get(cfg, "mlflow.tracking_uri", "MLFLOW_TRACKING_URI")), None
     )
     experiment = cfg_get(cfg, "mlflow.default_experiment", None) or os.getenv(
-        str(cfg_get(cfg, "mlflow.experiment_env", "MLFLOW_EXPERIMENT")), None
+        str(cfg_get(cfg, "mlflow.experiment", "MLFLOW_EXPERIMENT")), None
     )
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
