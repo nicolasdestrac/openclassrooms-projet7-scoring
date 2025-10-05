@@ -19,12 +19,12 @@ cost:
 
 # Modèle à entraîner: "lgbm", "logreg" ou "rf"
 model:
-  type: "rf"
+  type: "lgbm"
   lgbm:
     n_estimators: 5000
     learning_rate: 0.03
     num_leaves: 64
-    class_weight: "balanced"
+    is_unbalance: true
 
   logreg:
     penalty: "l2"

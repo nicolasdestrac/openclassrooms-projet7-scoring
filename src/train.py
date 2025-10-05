@@ -294,6 +294,8 @@ def main(config_path: str = "conf/params.yaml"):
     models_dir  = Path(cfg.artifacts["models_dir"])
     fold_path   = reports_dir / "cv_metrics_by_fold.csv"
     thr_path    = models_dir  / "decision_threshold.json"
+    with open("models/input_columns.json", "w") as f:
+        json.dump(list(X.columns), f, ensure_ascii=False, indent=2)
 
     fold_df.to_csv(fold_path, index=False)
     with open(thr_path, "w") as f:
