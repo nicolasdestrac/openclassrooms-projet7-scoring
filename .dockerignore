@@ -1,0 +1,9 @@
+.git
+__pycache__/
+*.pyc
+.venv/
+env/
+mlruns/
+mlruns_tune/
+data/
+*.ipynb
