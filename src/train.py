@@ -14,7 +14,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.base import clone
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, ConfusionMatrixDisplay
 from sklearn.exceptions import ConvergenceWarning
 
 from sklearn.linear_model import LogisticRegression
@@ -31,7 +31,7 @@ import shap
 
 from .data import load_raw, ensure_dirs
 from .features import make_train_test
-from .metrics import evaluate_all
+from .metrics import evaluate_all, confusion_at_threshold
 
 # --- Warnings : on fait le ménage ---
 warnings.filterwarnings(
@@ -309,6 +309,68 @@ def main(config_path: str = "conf/params.yaml"):
             f,
         )
 
+    # Artéfacts matrice de confusion OOF
+    thr = float(m_oof["threshold_opt"])
+    cm = m_oof["confusion_opt"]  # dict: tp/fp/fn/tn + ratios
+    tn, fp, fn, tp = map(int, (cm["tn"], cm["fp"], cm["fn"], cm["tp"]))
+
+    # Matrice brute 2x2 (lignes = vrais, colonnes = prédits)
+    cm_mat = np.array([[tn, fp],
+                       [fn, tp]], dtype=int)
+
+    # Normalisée par ligne (répartition par classe réelle)
+    row_sums = cm_mat.sum(axis=1, keepdims=True)
+    cm_norm = cm_mat.astype(float) / np.where(row_sums != 0, row_sums, 1)
+
+    # Chemins de sortie
+    cm_csv   = reports_dir / "confusion_matrix.csv"
+    cmn_csv  = reports_dir / "confusion_matrix_normalized.csv"
+    cm_png   = reports_dir / "confusion_matrix.png"
+    cmn_png  = reports_dir / "confusion_matrix_normalized.png"
+    rpt_path = reports_dir / "classification_report.txt"
+
+    # Sauvegardes CSV
+    (pd.DataFrame(cm_mat, index=["real_0","real_1"], columns=["pred_0","pred_1"])
+    .astype(int).to_csv(cm_csv, index=True))
+    (pd.DataFrame(cm_norm, index=["real_0","real_1"], columns=["pred_0","pred_1"])
+    .round(4).to_csv(cmn_csv, index=True))
+
+    # PNG brute
+    fig, ax = plt.subplots(figsize=(4.8, 4.2))
+    ConfusionMatrixDisplay(confusion_matrix=cm_mat, display_labels=["0","1"]).plot(
+        ax=ax, values_format="d", colorbar=False
+    )
+    ax.set_title(f"Confusion Matrix (OOF) — thr={thr:.3f}")
+    plt.tight_layout()
+    fig.savefig(cm_png, dpi=150)
+    plt.close(fig)
+
+    # PNG normalisée
+    fig, ax = plt.subplots(figsize=(4.8, 4.2))
+    ConfusionMatrixDisplay(confusion_matrix=cm_norm, display_labels=["0","1"]).plot(
+        ax=ax, values_format=".2f", colorbar=True
+    )
+    ax.set_title(f"Confusion Matrix (normalized, OOF) — thr={thr:.3f}")
+    plt.tight_layout()
+    fig.savefig(cmn_png, dpi=150)
+    plt.close(fig)
+
+    # Rapport texte (précision/rappel/F1 à partir de ta fonction existante)
+    # On recalcule y_pred au seuil optimal pour un petit résumé texte.
+    y_true = y.astype(int).to_numpy()
+    y_pred = (oof_prob >= thr).astype(int)
+    prec = tp / (tp + fp) if (tp + fp) else float("nan")
+    rec  = tp / (tp + fn) if (tp + fn) else float("nan")
+    acc  = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) else float("nan")
+    f1   = 2 * ((prec * rec) / (prec + rec)) if (prec + rec) else float("nan")
+    with open(rpt_path, "w") as f:
+        f.write(
+            "=== Classification summary (OOF) ===\n"
+            f"threshold: {thr:.3f}\n"
+            f"TP={tp} FP={fp} FN={fn} TN={tn}\n"
+            f"precision={prec:.4f} || recall={rec:.4f} || accuracy={acc:.4f} || f1={f1:.4f}\n"
+        )
+
     # MLflow run (sécurise un run propre)
     if mlflow.active_run() is not None:
         print(f"Ending stray active run: {mlflow.active_run().info.run_id}")
@@ -338,10 +400,25 @@ def main(config_path: str = "conf/params.yaml"):
                 "auc", "ap", "brier", "ks",
                 "business_cost", "business_cost_per10k", "business_score",
                 "threshold_opt",
-                "fit_secs", "n_iter",
+                "fit_secs", "n_iter"
             ]:
                 if k in r and pd.notnull(r[k]):
                     mlflow.log_metric(f"fold_{k}", float(r[k]), step=step)
+
+        # Métriques de la matrice de confusion OOF @ seuil optimal
+        for p in [cm_csv, cmn_csv, cm_png, cmn_png, rpt_path]:
+            if p and Path(p).exists():
+                mlflow.log_artifact(str(p))
+
+        thr = float(m_oof["threshold_opt"])
+        cm  = m_oof["confusion_opt"]  # dict: tp/fp/fn/tn (+ ratios)
+        tn, fp, fn, tp = cm["tn"], cm["fp"], cm["fn"], cm["tp"]
+
+        mlflow.log_metric("cm_tp", int(tp))
+        mlflow.log_metric("cm_fp", int(fp))
+        mlflow.log_metric("cm_fn", int(fn))
+        mlflow.log_metric("cm_tn", int(tn))
+        mlflow.log_metric("cm_threshold", thr)
 
         # Artifacts: CSV/JSON + importances/SHAP + modèle
         mlflow.log_artifact(str(fold_path))

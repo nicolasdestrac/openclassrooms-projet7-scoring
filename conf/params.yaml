@@ -24,7 +24,7 @@ model:
     n_estimators: 5000
     learning_rate: 0.03
     num_leaves: 64
-    is_unbalance: true
+    class_weight: "balanced"
 
   logreg:
     penalty: "l2"
