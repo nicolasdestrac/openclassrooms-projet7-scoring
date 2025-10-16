@@ -1,9 +1,11 @@
 .git
 __pycache__/
 *.pyc
-.venv/
-env/
+*.pyo
+*.pyd
+.build/
+dist/
+.env
+.mlflow/
 mlruns/
-mlruns_tune/
-data/
-*.ipynb
+**/.DS_Store
