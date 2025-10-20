@@ -12,14 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
-# code + artefacts (assure-toi que models/ est dans le repo)
-COPY api ./api
-COPY src ./src
-COPY models ./models
-COPY conf ./conf
-COPY README.md ./README.md
+# code de l'API
+COPY . /app
+
 
 CMD ["sh","-c","gunicorn api.app:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT} --workers 2 --timeout 120"]
