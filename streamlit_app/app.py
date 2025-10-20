@@ -1,10 +1,13 @@
-import os
-import json
-import requests
-import streamlit as st
-import pandas as pd
+# streamlit_app/app.py
+import os, json, requests, streamlit as st, pandas as pd
 
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+def _api_url():
+    # priorité aux secrets (Render), sinon variable d'env, sinon local
+    if "API_URL" in st.secrets:
+        return st.secrets["API_URL"]
+    return os.getenv("API_URL", "http://127.0.0.1:8000")
+
+API_URL = _api_url()
 
 st.set_page_config(page_title="Scoring - Démo", layout="centered")
 st.title("Scoring crédit – Démo")
@@ -21,19 +24,22 @@ def get_health():
     r.raise_for_status()
     return r.json()
 
-# Bandeau statut API
+col_status = st.empty()
 try:
     h = get_health()
-    st.success(f"API OK • modèle: {h.get('pipeline')} • seuil: {h.get('threshold')}")
+    col_status.success(f"API OK • modèle: {h.get('pipeline')} • seuil: {h.get('threshold')}")
 except Exception as e:
-    st.error(f"API KO: {e}")
+    col_status.error(f"API KO: {e}")
 
-schema = get_schema()
-cols = schema["input_columns"]
+# Si /schema tombe, on s’arrête proprement
+try:
+    schema = get_schema()
+    cols = schema["input_columns"]
+except Exception as e:
+    st.stop()
 
 st.subheader("Saisir les caractéristiques")
 with st.form("form"):
-    # UI minimaliste : on permet de saisir quelques champs fréquents, et tout le reste via JSON facultatif
     amt_income_total = st.number_input("AMT_INCOME_TOTAL", min_value=0.0, value=180000.0, step=1000.0)
     amt_credit       = st.number_input("AMT_CREDIT",       min_value=0.0, value=450000.0, step=1000.0)
     code_gender      = st.selectbox("CODE_GENDER", options=["M", "F", "XNA"], index=0)
@@ -46,7 +52,6 @@ with st.form("form"):
     submitted = st.form_submit_button("Calculer")
 
 if submitted:
-    # Construction du payload conforme à /schema : on met les colonnes absentes à blanc
     features = {c: None for c in cols}
     features.update({
         "AMT_INCOME_TOTAL": amt_income_total,
@@ -54,7 +59,6 @@ if submitted:
         "CODE_GENDER": code_gender,
         "NAME_CONTRACT_TYPE": name_contract,
     })
-    # merge JSON libre
     try:
         extra = json.loads(extra_json.strip() or "{}")
         for k, v in extra.items():
@@ -63,29 +67,28 @@ if submitted:
     except Exception as e:
         st.warning(f"JSON invalide ignoré: {e}")
 
-    # Appel /predict_proba puis /predict
-    try:
-        r1 = requests.post(f"{API_URL}/predict_proba", json={"features": features}, timeout=20)
-        r1.raise_for_status()
-        proba = r1.json()["probability"]
+    with st.spinner("Inférence en cours…"):
+        try:
+            r1 = requests.post(f"{API_URL}/predict_proba", json={"features": features}, timeout=20)
+            r1.raise_for_status()
+            proba = r1.json()["probability"]
 
-        r2 = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=20)
-        r2.raise_for_status()
-        pred_res = r2.json()
+            r2 = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=20)
+            r2.raise_for_status()
+            pred_res = r2.json()
 
-        st.markdown("### Résultat")
-        st.metric("Probabilité de défaut (modèle)", f"{proba:.3f}")
-        st.write(f"Seuil décision: **{pred_res.get('threshold')}**")
-        decision = "❌ Refus" if pred_res.get("prediction", 0) == 1 else "✅ Acceptation"
-        st.subheader(decision)
+            st.markdown("### Résultat")
+            st.metric("Probabilité de défaut (modèle)", f"{proba:.3f}")
+            st.write(f"Seuil décision: **{pred_res.get('threshold')}**")
+            decision = "❌ Refus" if pred_res.get("prediction", 0) == 1 else "✅ Acceptation"
+            st.subheader(decision)
 
-        # Rappel des features réellement envoyées (non vides)
-        df_show = pd.DataFrame(
-            [{"feature": k, "value": v} for k, v in features.items() if v is not None]
-        )
-        st.dataframe(df_show, use_container_width=True)
+            df_show = pd.DataFrame(
+                [{"feature": k, "value": v} for k, v in features.items() if v is not None]
+            )
+            st.dataframe(df_show, use_container_width=True)
 
-    except requests.HTTPError as e:
-        st.error(f"Erreur HTTP: {e.response.text}")
-    except Exception as e:
-        st.error(f"Erreur: {e}")
+        except requests.HTTPError as e:
+            st.error(f"Erreur HTTP: {e.response.text}")
+        except Exception as e:
+            st.error(f"Erreur: {e}")
