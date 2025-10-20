@@ -1,11 +1,8 @@
 .git
+.gitignore
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.env
+*.ipynb_checkpoints
+data/
 mlruns/
-.mlflow/
-**/.DS_Store
-/build
-/dist
+.env
