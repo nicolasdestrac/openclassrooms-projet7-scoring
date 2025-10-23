@@ -7,6 +7,49 @@ import requests
 import pandas as pd
 import streamlit as st
 
+from datetime import date
+
+def _is_money(col: str) -> bool:
+    cu = col.upper()
+    return cu.startswith("AMT_") or cu.endswith("_AMT") or "AMT" in cu
+
+def render_input_for(colname: str):
+    """Rend un widget adapté et renvoie la valeur (ou None si non saisie)."""
+    cu = colname.upper()
+
+    # 1) Calendrier -> DAYS_BIRTH (négatif, nb de jours avant aujourd'hui)
+    if cu == "DAYS_BIRTH":
+        st.markdown("**Date de naissance** → convertie en `DAYS_BIRTH` (jours négatifs)")
+        dob = st.date_input("Date de naissance", value=date(1985, 1, 1))
+        days = -(date.today() - dob).days
+        st.caption(f"DAYS_BIRTH calculé : {days}")
+        return float(days)
+
+    # 2) Montants => 2 décimales
+    if _is_money(colname):
+        val = st.number_input(colname, min_value=0.0, step=100.0, format="%.2f")
+        return float(val) if val != 0.0 else None
+
+    # 3) Tous les autres DAYS_* => entier (0 décimale)
+    if cu.startswith("DAYS_"):
+        val = st.number_input(colname, value=0, step=1, format="%.0f")
+        return float(val) if val != 0 else None
+
+    # 4) RATIO / SCORE => 4 décimales
+    if "RATIO" in cu or "SCORE" in cu:
+        val = st.number_input(colname, min_value=0.0, step=0.01, format="%.4f")
+        return float(val) if val != 0.0 else None
+
+    # 5) Catégorielles NAME_* => texte
+    if cu.startswith("NAME_"):
+        txt = st.text_input(colname, value="")
+        return txt.strip() or None
+
+    # 6) Par défaut : numérique 6 décimales
+    val = st.number_input(colname, value=0.0, step=1.0, format="%.6f")
+    return float(val) if val != 0.0 else None
+
+
 # 1) TOUJOURS en premier
 st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
 
@@ -123,18 +166,9 @@ with tab_simple:
 
     for i, colname in enumerate(top_cols):
         with cols[i % len(cols)]:
-            if is_numeric_name(colname):
-                val = st.number_input(colname, value=0.0, step=1.0, format="%.6f")
-                if val != 0.0:
-                    features[colname] = float(val)
-            else:
-                txt = st.text_input(colname, value="")
-                if txt.strip():
-                    try:
-                        num = float(txt)
-                        features[colname] = num
-                    except Exception:
-                        features[colname] = txt.strip()
+            val = render_input_for(colname)
+            if val is not None:
+                features[colname] = val
 
     c1, c2 = st.columns(2)
     with c1:
@@ -162,6 +196,7 @@ with tab_simple:
             "  -H 'Content-Type: application/json' \\\n"
             f"  -d '{json.dumps({'features': features}, ensure_ascii=False)}'"
         )
+
 
 with tab_json:
     st.write("Colle un JSON complet pour `features` (toutes colonnes ou un sous-ensemble).")
