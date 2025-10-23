@@ -1,20 +1,141 @@
 # streamlit_app/app.py
-import os, json, io
+# -*- coding: utf-8 -*-
+import os, io, json
 from pathlib import Path
 from typing import List, Dict
-
-import requests
-import pandas as pd
-import streamlit as st
-
 from datetime import date
 
+import pandas as pd
+import requests
+import streamlit as st
+
+# -----------------------------------------------------------------------------
+# 1) TOUJOURS en premier : config de page
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
+
+# -----------------------------------------------------------------------------
+# Helpers "secrets" sûrs (privilégie l'env, ne lit st.secrets que si le fichier existe)
+# -----------------------------------------------------------------------------
+def get_secret_env_first(key: str, default: str = "") -> str:
+    v = os.getenv(key)
+    if v:
+        return v.strip()
+
+    try:
+        secrets_paths = [
+            Path(".streamlit/secrets.toml"),
+            Path("/opt/render/.streamlit/secrets.toml"),
+            Path("/opt/render/project/src/.streamlit/secrets.toml"),
+        ]
+        if any(p.exists() for p in secrets_paths):
+            # st.secrets.get -> None si absent
+            return str(st.secrets.get(key, default)).strip()
+    except Exception:
+        pass
+    return default
+
+# -----------------------------------------------------------------------------
+# Config (API + features à privilégier dans l'onglet Simple)
+# -----------------------------------------------------------------------------
+API_URL = get_secret_env_first("API_URL")
+TOP_FEATURES_SECRET = get_secret_env_first("TOP_FEATURES", "")
+
+st.title("Projet 7 — Scoring")
+
+if not API_URL:
+    st.error(
+        "API_URL manquant. Ajoute la variable d'environnement **API_URL** dans "
+        "Render → Settings → Environment, ou fournis `.streamlit/secrets.toml`."
+    )
+    st.stop()
+
+API_BASE = API_URL.rstrip("/")  # évite //schema & co
+st.caption(f"API: {API_BASE}")
+
+# -----------------------------------------------------------------------------
+# Fetch helpers (retournent (data, error_str))
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_json(url: str):
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        return r.json(), None
+    except Exception as e:
+        return {}, str(e)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_schema():
+    js, err = fetch_json(f"{API_BASE}/schema")
+    cols = list(js.get("input_columns", [])) if js else []
+    return cols, err
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_health():
+    js, _ = fetch_json(f"{API_BASE}/health")
+    return js if js else {}
+
+schema, schema_err = get_schema()
+health = get_health()
+
+with st.expander("État API / Schéma", expanded=False):
+    st.json(health or {"status": "unknown"})
+    if schema:
+        st.write(f"**{len(schema)} colonnes attendues**")
+        st.code("\n".join(schema))
+    if schema_err:
+        st.warning(f"Erreur lors de l’appel /schema : {schema_err}")
+
+# -----------------------------------------------------------------------------
+# Sélection guidée de colonnes (et fallback si /schema vide)
+# -----------------------------------------------------------------------------
+def pick_top_features(all_cols: List[str], k: int = 10) -> List[str]:
+    # priorité à TOP_FEATURES si fournie (ex: "AMT_INCOME_TOTAL,AMT_CREDIT,DAYS_BIRTH")
+    if TOP_FEATURES_SECRET:
+        want = [c.strip() for c in TOP_FEATURES_SECRET.split(",") if c.strip()]
+        # si tout n'est pas dans all_cols, on renvoie quand même l'ordre demandé
+        return [c for c in want if (not all_cols or c in all_cols)] or want
+
+    if not all_cols:
+        return []
+
+    key_words = ("AMT", "DAYS", "CREDIT", "INCOME", "EXT_SOURCE", "AGE", "SCORE", "AMT_")
+    ranked = sorted(all_cols, key=lambda c: any(k in c.upper() for k in key_words), reverse=True)
+    seen, out = set(), []
+    for c in ranked + all_cols:
+        if c not in seen:
+            out.append(c); seen.add(c)
+        if len(out) >= k:
+            break
+    return out
+
+DEFAULT_TOP = [
+    "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
+    "NAME_INCOME_TYPE", "DAYS_BIRTH", "DAYS_EMPLOYED",
+    "DAYS_REGISTRATION", "DAYS_ID_PUBLISH",
+    "OWN_CAR_AGE", "AMT_GOODS_PRICE",
+]
+
+top_cols = pick_top_features(schema, k=10) if schema else DEFAULT_TOP
+
+# -----------------------------------------------------------------------------
+# Widgets "smart" pour l’onglet Simple
+# -----------------------------------------------------------------------------
 def _is_money(col: str) -> bool:
     cu = col.upper()
     return cu.startswith("AMT_") or cu.endswith("_AMT") or "AMT" in cu
 
 def render_input_for(colname: str):
-    """Rend un widget adapté et renvoie la valeur (ou None si non saisie)."""
+    """
+    Rend un widget adapté et renvoie la valeur (ou None si non saisie).
+    - Montants -> 2 décimales
+    - DAYS_BIRTH -> date-picker puis conversion en jours négatifs
+    - Autres DAYS_* -> entier
+    - RATIO/SCORE -> 4 décimales
+    - NAME_* -> texte
+    - Par défaut -> numérique 6 décimales
+    """
     cu = colname.upper()
 
     # 1) Calendrier -> DAYS_BIRTH (négatif, nb de jours avant aujourd'hui)
@@ -49,118 +170,22 @@ def render_input_for(colname: str):
     val = st.number_input(colname, value=0.0, step=1.0, format="%.6f")
     return float(val) if val != 0.0 else None
 
-
-# 1) TOUJOURS en premier
-st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
-
-# -----------------------
-# Helpers "secrets" sûrs
-# -----------------------
-def get_secret_env_first(key: str, default: str = "") -> str:
-    """
-    Renvoie d'abord la variable d'environnement.
-    Ne lit st.secrets *que* si un secrets.toml existe réellement (évite le warning).
-    """
-    val = os.getenv(key)
-    if val:
-        return val.strip()
-
-    # On ne touche st.secrets que si un fichier secrets.toml existe
-    try:
-        secrets_paths = [
-            Path(".streamlit/secrets.toml"),
-            Path("/opt/render/.streamlit/secrets.toml"),
-            Path("/opt/render/project/src/.streamlit/secrets.toml"),
-        ]
-        if any(p.exists() for p in secrets_paths):
-            return str(st.secrets.get(key, default)).strip()
-    except Exception:
-        pass
-    return default
-
-# -----------------------
-# Config
-# -----------------------
-API_URL = get_secret_env_first("API_URL")
-TOP_FEATURES_SECRET = get_secret_env_first("TOP_FEATURES", "")
-
-st.title("Projet 7 — Scoring")
-
-if not API_URL:
-    st.error(
-        "API_URL manquant. Ajoute la variable d'environnement **API_URL** dans "
-        "Render → Settings → Environment, ou fournis `.streamlit/secrets.toml`."
-    )
-    st.stop()
-
-st.caption(f"API: {API_URL}")
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_json(url: str) -> Dict:
-    r = requests.get(url, timeout=15)
-    r.raise_for_status()
-    return r.json()
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_schema() -> List[str]:
-    try:
-        js = fetch_json(f"{API_URL}/schema")
-        return list(js.get("input_columns", []))
-    except Exception:
-        return []
-
-@st.cache_data(ttl=120, show_spinner=False)
-def get_health() -> Dict:
-    try:
-        return fetch_json(f"{API_URL}/health")
-    except Exception:
-        return {}
-
-schema = get_schema()
-health = get_health()
-
-with st.expander("État API / Schéma", expanded=False):
-    st.json(health or {"status": "unknown"})
-    if schema:
-        st.write(f"**{len(schema)} colonnes attendues**")
-        st.code("\n".join(schema))
-
-def pick_top_features(all_cols: List[str], k: int = 10) -> List[str]:
-    if TOP_FEATURES_SECRET:
-        want = [c.strip() for c in TOP_FEATURES_SECRET.split(",") if c.strip()]
-        return [c for c in want if c in all_cols] or want
-    if not all_cols:
-        return []
-    key_words = ("AMT", "DAYS", "CREDIT", "INCOME", "EXT_SOURCE", "AGE", "SCORE", "AMT_")
-    ranked = sorted(all_cols, key=lambda c: any(k in c.upper() for k in key_words), reverse=True)
-    seen, out = set(), []
-    for c in ranked + all_cols:
-        if c not in seen:
-            out.append(c); seen.add(c)
-        if len(out) >= k:
-            break
-    return out
-
-top_cols = pick_top_features(schema, k=10)
-
-def is_numeric_name(col: str) -> bool:
-    cu = col.upper()
-    return any(tag in cu for tag in ("AMT", "DAYS", "CNT", "HOUR", "YEARS", "RATIO", "SCORE"))
-
 def call_api(endpoint: str, payload: Dict) -> Dict:
-    r = requests.post(f"{API_URL}{endpoint}", json=payload, timeout=20)
+    r = requests.post(f"{API_BASE}{endpoint}", json=payload, timeout=20)
     r.raise_for_status()
     return r.json()
 
-# -----------------------
-# UI
-# -----------------------
+# -----------------------------------------------------------------------------
+# UI principale
+# -----------------------------------------------------------------------------
 tab_simple, tab_json, tab_csv = st.tabs(["🧩 Simple", "💻 JSON avancé", "📄 CSV (1 ligne)"])
 
 with tab_simple:
     st.write("Renseigne quelques variables utiles. Les colonnes manquantes seront imputées par le pipeline.")
-    if not top_cols:
+
+    if not schema:
         st.info("Le schéma n'a pas été récupéré — bascule sur l’onglet **JSON avancé** ou **CSV**.")
+
     features = {}
     cols = st.columns(2) if len(top_cols) > 1 else [st]
 
@@ -192,16 +217,16 @@ with tab_simple:
         st.markdown("**Exemple `curl`**")
         st.code(
             "curl -X POST \\\n"
-            f"  '{API_URL}/predict' \\\n"
+            f"  '{API_BASE}/predict' \\\n"
             "  -H 'Content-Type: application/json' \\\n"
             f"  -d '{json.dumps({'features': features}, ensure_ascii=False)}'"
         )
-
 
 with tab_json:
     st.write("Colle un JSON complet pour `features` (toutes colonnes ou un sous-ensemble).")
     example = {"AMT_INCOME_TOTAL": 200000, "AMT_CREDIT": 4430}
     raw = st.text_area("JSON", value=json.dumps({"features": example}, indent=2), height=180)
+
     c1, c2 = st.columns(2)
     if c1.button("Prédire (classe)"):
         try:
@@ -211,6 +236,7 @@ with tab_json:
             st.code(json.dumps(resp, indent=2, ensure_ascii=False))
         except Exception as e:
             st.error(f"Erreur : {e}")
+
     if c2.button("Probabilité (score)"):
         try:
             payload = json.loads(raw)
@@ -221,7 +247,8 @@ with tab_json:
             st.error(f"Erreur : {e}")
 
 with tab_csv:
-    st.write("Charge un CSV contenant **une seule ligne** (ou choisis la ligne à scorer). Les noms de colonnes doivent matcher au mieux `/schema`.")
+    st.write("Charge un CSV contenant **une seule ligne** (ou choisis la ligne à scorer). "
+             "Les noms de colonnes doivent matcher au mieux `/schema`.")
     up = st.file_uploader("CSV", type=["csv"])
     if up:
         try:
