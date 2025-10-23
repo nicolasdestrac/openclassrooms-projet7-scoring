@@ -7,16 +7,35 @@ import pandas as pd
 import streamlit as st
 
 # -----------------------
-# Config / helpers
+# Helpers "secrets" sûrs
 # -----------------------
-API_URL = st.secrets.get("API_URL") or os.getenv("API_URL", "").strip()
-TOP_FEATURES_SECRET = (st.secrets.get("TOP_FEATURES") or os.getenv("TOP_FEATURES", "")).strip()
+def get_secret(key: str, default: str = "") -> str:
+    """Renvoie d'abord la variable d'environnement, puis (si présent) st.secrets."""
+    val = os.getenv(key)
+    if val:
+        return val.strip()
+    try:
+        # n'accède à st.secrets que si un secrets.toml existe
+        return str(st.secrets.get(key, default)).strip()
+    except Exception:
+        return default
+
+# -----------------------
+# Config
+# -----------------------
+API_URL = get_secret("API_URL")
+TOP_FEATURES_SECRET = get_secret("TOP_FEATURES", "")
 
 st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
 st.title("Projet 7 — Scoring")
+
 if not API_URL:
-    st.error("API_URL manquant (Secrets `.streamlit/secrets.toml` ou variable d'environnement).")
+    st.error(
+        "API_URL manquant. Ajoute la variable d'environnement **API_URL** dans "
+        "Render → Settings → Environment, ou fournis `.streamlit/secrets.toml`."
+    )
     st.stop()
+
 st.caption(f"API: {API_URL}")
 
 @st.cache_data(ttl=300, show_spinner=False)
