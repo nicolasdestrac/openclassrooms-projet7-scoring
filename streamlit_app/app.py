@@ -1,32 +1,46 @@
 # streamlit_app/app.py
 import os, json, io
+from pathlib import Path
 from typing import List, Dict
 
 import requests
 import pandas as pd
 import streamlit as st
 
+# 1) TOUJOURS en premier
+st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
+
 # -----------------------
 # Helpers "secrets" sûrs
 # -----------------------
-def get_secret(key: str, default: str = "") -> str:
-    """Renvoie d'abord la variable d'environnement, puis (si présent) st.secrets."""
+def get_secret_env_first(key: str, default: str = "") -> str:
+    """
+    Renvoie d'abord la variable d'environnement.
+    Ne lit st.secrets *que* si un secrets.toml existe réellement (évite le warning).
+    """
     val = os.getenv(key)
     if val:
         return val.strip()
+
+    # On ne touche st.secrets que si un fichier secrets.toml existe
     try:
-        # n'accède à st.secrets que si un secrets.toml existe
-        return str(st.secrets.get(key, default)).strip()
+        secrets_paths = [
+            Path(".streamlit/secrets.toml"),
+            Path("/opt/render/.streamlit/secrets.toml"),
+            Path("/opt/render/project/src/.streamlit/secrets.toml"),
+        ]
+        if any(p.exists() for p in secrets_paths):
+            return str(st.secrets.get(key, default)).strip()
     except Exception:
-        return default
+        pass
+    return default
 
 # -----------------------
 # Config
 # -----------------------
-API_URL = get_secret("API_URL")
-TOP_FEATURES_SECRET = get_secret("TOP_FEATURES", "")
+API_URL = get_secret_env_first("API_URL")
+TOP_FEATURES_SECRET = get_secret_env_first("TOP_FEATURES", "")
 
-st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
 st.title("Projet 7 — Scoring")
 
 if not API_URL:
@@ -48,8 +62,7 @@ def fetch_json(url: str) -> Dict:
 def get_schema() -> List[str]:
     try:
         js = fetch_json(f"{API_URL}/schema")
-        cols = list(js.get("input_columns", []))
-        return cols
+        return list(js.get("input_columns", []))
     except Exception:
         return []
 
@@ -75,10 +88,8 @@ def pick_top_features(all_cols: List[str], k: int = 10) -> List[str]:
         return [c for c in want if c in all_cols] or want
     if not all_cols:
         return []
-    # heuristique “quick & dirty” : colonnes monétaires / jours / scores / target-like
     key_words = ("AMT", "DAYS", "CREDIT", "INCOME", "EXT_SOURCE", "AGE", "SCORE", "AMT_")
     ranked = sorted(all_cols, key=lambda c: any(k in c.upper() for k in key_words), reverse=True)
-    # garde l’ordre d’origine mais privilégie les colonnes “suspectes”
     seen, out = set(), []
     for c in ranked + all_cols:
         if c not in seen:
@@ -119,7 +130,6 @@ with tab_simple:
             else:
                 txt = st.text_input(colname, value="")
                 if txt.strip():
-                    # tente cast numérique, sinon string
                     try:
                         num = float(txt)
                         features[colname] = num
