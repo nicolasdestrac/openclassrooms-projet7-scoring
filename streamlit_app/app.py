@@ -138,36 +138,36 @@ def render_input_for(colname: str):
     """
     cu = colname.upper()
 
-    # 1) Calendrier -> DAYS_BIRTH (négatif, nb de jours avant aujourd'hui)
+    # 1) Calendrier -> DAYS_BIRTH (jours négatifs)
     if cu == "DAYS_BIRTH":
         st.markdown("**Date de naissance** → convertie en `DAYS_BIRTH` (jours négatifs)")
-        dob = st.date_input("Date de naissance", value=date(1985, 1, 1))
+        dob = st.date_input("Date de naissance", value=date(1985, 1, 1), key=f"{colname}_date")
         days = -(date.today() - dob).days
         st.caption(f"DAYS_BIRTH calculé : {days}")
         return float(days)
 
     # 2) Montants => 2 décimales
     if _is_money(colname):
-        val = st.number_input(colname, min_value=0.0, step=100.0, format="%.2f")
+        val = st.number_input(colname, min_value=0.0, step=100.0, format="%.2f", key=f"{colname}_money")
         return float(val) if val != 0.0 else None
 
-    # 3) Tous les autres DAYS_* => entier (0 décimale)
+    # 3) Autres DAYS_* => entier
     if cu.startswith("DAYS_"):
-        val = st.number_input(colname, value=0, step=1, format="%.0f")
+        val = st.number_input(colname, value=0, step=1, format="%d", key=f"{colname}_int")
         return float(val) if val != 0 else None
 
     # 4) RATIO / SCORE => 4 décimales
     if "RATIO" in cu or "SCORE" in cu:
-        val = st.number_input(colname, min_value=0.0, step=0.01, format="%.4f")
+        val = st.number_input(colname, min_value=0.0, step=0.01, format="%.4f", key=f"{colname}_ratio")
         return float(val) if val != 0.0 else None
 
     # 5) Catégorielles NAME_* => texte
     if cu.startswith("NAME_"):
-        txt = st.text_input(colname, value="")
+        txt = st.text_input(colname, value="", key=f"{colname}_text")
         return txt.strip() or None
 
     # 6) Par défaut : numérique 6 décimales
-    val = st.number_input(colname, value=0.0, step=1.0, format="%.6f")
+    val = st.number_input(colname, value=0.0, step=1.0, format="%.6f", key=f"{colname}_num")
     return float(val) if val != 0.0 else None
 
 def call_api(endpoint: str, payload: Dict) -> Dict:
