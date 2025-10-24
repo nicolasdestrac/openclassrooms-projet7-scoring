@@ -140,6 +140,20 @@ def fr_label(colname: str) -> str:
     # fallback lisible si non mappé
     return colname.replace("_", " ").title()
 
+# -----------------------------------------------------------------------------
+# Libellés FR -> codes bruts du dataset (Home Credit)
+# -----------------------------------------------------------------------------
+INCOME_TYPE_CHOICES = [
+    ("Salarié",               "Working"),
+    ("Fonctionnaire",         "State servant"),
+    ("Commerçant / Associé",  "Commercial associate"),
+    ("Retraité",              "Pensioner"),
+    ("Étudiant",              "Student"),
+    ("Sans emploi",           "Unemployed"),
+    ("Entrepreneur",          "Businessman"),
+    ("Congé maternité",       "Maternity leave"),
+]
+INCOME_TYPE_FR = [fr for fr, _ in INCOME_TYPE_CHOICES]
 
 # -----------------------------------------------------------------------------
 # Widgets "smart" pour l’onglet Simple
@@ -180,9 +194,28 @@ def render_input_for(colname: str):
         val = st.number_input(label, min_value=0.0, step=0.01, format="%.4f", key=f"{colname}_ratio")
         return float(val) if val != 0.0 else None
 
+    if cu == "NAME_INCOME_TYPE":
+        # Selectbox avec options FR ; on renvoie le code brut du dataset
+        choix_fr = st.selectbox(
+            label,
+            options=["— Sélectionner —"] + INCOME_TYPE_FR + ["Autre (saisie libre)"],
+            index=0,
+            key=f"{colname}_sel"
+        )
+        if choix_fr == "— Sélectionner —":
+            return None
+        if choix_fr == "Autre (saisie libre)":
+            libre = st.text_input("Type de revenu (texte libre)", key=f"{colname}_free")
+            return libre.strip() or None
+        # map FR -> code dataset
+        code = dict(INCOME_TYPE_CHOICES).get(choix_fr)
+        return code
+
+    # Fallback générique pour d'autres NAME_*
     if cu.startswith("NAME_"):
         txt = st.text_input(label, value="", key=f"{colname}_text")
         return txt.strip() or None
+
 
     val = st.number_input(label, value=0.0, step=1.0, format="%.6f", key=f"{colname}_num")
     return float(val) if val != 0.0 else None
