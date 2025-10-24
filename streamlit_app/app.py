@@ -45,7 +45,7 @@ st.title("Projet 7 — Scoring")
 
 if not API_URL:
     st.error(
-        "API_URL manquant. Ajoute la variable d'environnement **API_URL** dans "
+        "API_URL manquant. Ajoutez la variable d'environnement **API_URL** dans "
         "Render → Settings → Environment, ou fournis `.streamlit/secrets.toml`."
     )
     st.stop()
@@ -120,6 +120,30 @@ DEFAULT_TOP = [
 top_cols = pick_top_features(schema, k=10) if schema else DEFAULT_TOP
 
 # -----------------------------------------------------------------------------
+# Libellés FR d'affichage (clé = nom de colonne du dataset)
+# -----------------------------------------------------------------------------
+COL_LABELS = {
+    "AMT_INCOME_TOTAL": "Revenu total annuel (€)",
+    "AMT_CREDIT": "Montant du crédit (€)",
+    "AMT_ANNUITY": "Mensualité (annuité) (€)",
+    "AMT_GOODS_PRICE": "Prix du bien (€)",
+    "NAME_INCOME_TYPE": "Type de revenu",
+    "DAYS_BIRTH": "Âge (date de naissance)",
+    "DAYS_EMPLOYED": "Jours d'emploi (négatifs si en cours)",
+    "DAYS_REGISTRATION": "Jours depuis l'enregistrement",
+    "DAYS_ID_PUBLISH": "Jours depuis émission de la pièce d'identité",
+    "OWN_CAR_AGE": "Âge du véhicule (années)",
+    # … complèter avec les autres colonnes si besoin
+}
+def fr_label(colname: str) -> str:
+    """Libellé français à afficher pour une colonne."""
+    if colname in COL_LABELS:
+        return COL_LABELS[colname]
+    # fallback lisible si non mappé
+    return colname.replace("_", " ").title()
+
+
+# -----------------------------------------------------------------------------
 # Widgets "smart" pour l’onglet Simple
 # -----------------------------------------------------------------------------
 def _is_money(col: str) -> bool:
@@ -136,38 +160,40 @@ def render_input_for(colname: str):
     - NAME_* -> texte
     - Par défaut -> numérique 6 décimales
     """
+    label = fr_label(colname)
     cu = colname.upper()
 
-    # 1) Calendrier -> DAYS_BIRTH (jours négatifs)
     if cu == "DAYS_BIRTH":
-        st.markdown("**Date de naissance** → convertie en `DAYS_BIRTH` (jours négatifs)")
+        st.markdown(f"**{label}** → convertie en `DAYS_BIRTH` (jours négatifs)")
+        if colname in COL_LABELS:
+            st.caption(COL_LABELS[colname])
         dob = st.date_input("Date de naissance", value=date(1985, 1, 1), key=f"{colname}_date")
         days = -(date.today() - dob).days
         st.caption(f"DAYS_BIRTH calculé : {days}")
         return float(days)
 
-    # 2) Montants => 2 décimales
     if _is_money(colname):
-        val = st.number_input(colname, min_value=0.0, step=100.0, format="%.2f", key=f"{colname}_money")
+        if colname in COL_LABELS: st.caption(COL_LABELS[colname])
+        val = st.number_input(label, min_value=0.0, step=100.0, format="%.2f", key=f"{colname}_money")
         return float(val) if val != 0.0 else None
 
-    # 3) Autres DAYS_* => entier
     if cu.startswith("DAYS_"):
-        val = st.number_input(colname, value=0, step=1, format="%d", key=f"{colname}_int")
+        if colname in COL_LABELS: st.caption(COL_LABELS[colname])
+        val = st.number_input(label, value=0, step=1, format="%d", key=f"{colname}_int")
         return float(val) if val != 0 else None
 
-    # 4) RATIO / SCORE => 4 décimales
     if "RATIO" in cu or "SCORE" in cu:
-        val = st.number_input(colname, min_value=0.0, step=0.01, format="%.4f", key=f"{colname}_ratio")
+        if colname in COL_LABELS: st.caption(COL_LABELS[colname])
+        val = st.number_input(label, min_value=0.0, step=0.01, format="%.4f", key=f"{colname}_ratio")
         return float(val) if val != 0.0 else None
 
-    # 5) Catégorielles NAME_* => texte
     if cu.startswith("NAME_"):
-        txt = st.text_input(colname, value="", key=f"{colname}_text")
+        if colname in COL_LABELS: st.caption(COL_LABELS[colname])
+        txt = st.text_input(label, value="", key=f"{colname}_text")
         return txt.strip() or None
 
-    # 6) Par défaut : numérique 6 décimales
-    val = st.number_input(colname, value=0.0, step=1.0, format="%.6f", key=f"{colname}_num")
+    if colname in COL_LABELS: st.caption(COL_LABELS[colname])
+    val = st.number_input(label, value=0.0, step=1.0, format="%.6f", key=f"{colname}_num")
     return float(val) if val != 0.0 else None
 
 def call_api(endpoint: str, payload: Dict) -> Dict:
@@ -181,10 +207,10 @@ def call_api(endpoint: str, payload: Dict) -> Dict:
 tab_simple, tab_json, tab_csv = st.tabs(["🧩 Simple", "💻 JSON avancé", "📄 CSV (1 ligne)"])
 
 with tab_simple:
-    st.write("Renseigne quelques variables utiles. Les colonnes manquantes seront imputées par le pipeline.")
+    st.write("Renseignez quelques variables utiles. Les colonnes manquantes seront imputées par le pipeline.")
 
     if not schema:
-        st.info("Le schéma n'a pas été récupéré — bascule sur l’onglet **JSON avancé** ou **CSV**.")
+        st.info("Le schéma n'a pas été récupéré — basculez sur l’onglet **JSON avancé** ou **CSV**.")
 
     features = {}
     cols = st.columns(2) if len(top_cols) > 1 else [st]
@@ -223,7 +249,7 @@ with tab_simple:
         )
 
 with tab_json:
-    st.write("Colle un JSON complet pour `features` (toutes colonnes ou un sous-ensemble).")
+    st.write("Collez un JSON complet pour `features` (toutes colonnes ou un sous-ensemble).")
     example = {"AMT_INCOME_TOTAL": 200000, "AMT_CREDIT": 4430}
     raw = st.text_area("JSON", value=json.dumps({"features": example}, indent=2), height=180)
 
@@ -247,7 +273,7 @@ with tab_json:
             st.error(f"Erreur : {e}")
 
 with tab_csv:
-    st.write("Charge un CSV contenant **une seule ligne** (ou choisis la ligne à scorer). "
+    st.write("Chargez un CSV contenant **une seule ligne** (ou choisissez la ligne à scorer). "
              "Les noms de colonnes doivent matcher au mieux `/schema`.")
     up = st.file_uploader("CSV", type=["csv"])
     if up:
