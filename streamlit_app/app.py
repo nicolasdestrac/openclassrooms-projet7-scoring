@@ -163,34 +163,27 @@ def render_input_for(colname: str):
 
     if cu == "DAYS_BIRTH":
         st.markdown(f"**{label}** → convertie en `DAYS_BIRTH` (jours négatifs)")
-        """if colname in COL_LABELS:
-            st.caption(COL_LABELS[colname])"""
         dob = st.date_input("Date de naissance", value=date(1985, 1, 1), key=f"{colname}_date")
         days = -(date.today() - dob).days
         st.caption(f"DAYS_BIRTH calculé : {days}")
         return float(days)
 
     if _is_money(colname):
-        # if colname in COL_LABELS: st.caption(COL_LABELS[colname])
         val = st.number_input(label, min_value=0.0, step=100.0, format="%.2f", key=f"{colname}_money")
         return float(val) if val != 0.0 else None
 
     if cu.startswith("DAYS_"):
-        # if colname in COL_LABELS: st.caption(COL_LABELS[colname])
         val = st.number_input(label, value=0, step=1, format="%d", key=f"{colname}_int")
         return float(val) if val != 0 else None
 
     if "RATIO" in cu or "SCORE" in cu:
-        # if colname in COL_LABELS: st.caption(COL_LABELS[colname])
         val = st.number_input(label, min_value=0.0, step=0.01, format="%.4f", key=f"{colname}_ratio")
         return float(val) if val != 0.0 else None
 
     if cu.startswith("NAME_"):
-        # if colname in COL_LABELS: st.caption(COL_LABELS[colname])
         txt = st.text_input(label, value="", key=f"{colname}_text")
         return txt.strip() or None
 
-    # if colname in COL_LABELS: st.caption(COL_LABELS[colname])
     val = st.number_input(label, value=0.0, step=1.0, format="%.6f", key=f"{colname}_num")
     return float(val) if val != 0.0 else None
 
