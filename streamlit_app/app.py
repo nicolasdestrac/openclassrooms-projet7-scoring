@@ -10,7 +10,7 @@ import requests
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# 1) TOUJOURS en premier : config de page
+# 1) Config de page
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
 
@@ -90,7 +90,7 @@ with st.expander("État API / Schéma", expanded=False):
 # -----------------------------------------------------------------------------
 # Sélection guidée de colonnes (et fallback si /schema vide)
 # -----------------------------------------------------------------------------
-def pick_top_features(all_cols: List[str], k: int = 10) -> List[str]:
+def pick_top_features(all_cols: List[str], k: int = 6) -> List[str]:
     # priorité à TOP_FEATURES si fournie (ex: "AMT_INCOME_TOTAL,AMT_CREDIT,DAYS_BIRTH")
     if TOP_FEATURES_SECRET:
         want = [c.strip() for c in TOP_FEATURES_SECRET.split(",") if c.strip()]
@@ -112,21 +112,19 @@ def pick_top_features(all_cols: List[str], k: int = 10) -> List[str]:
 
 DEFAULT_TOP = [
     "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
-    "NAME_INCOME_TYPE", "DAYS_BIRTH", "DAYS_EMPLOYED",
-    "DAYS_REGISTRATION", "DAYS_ID_PUBLISH",
-    "OWN_CAR_AGE", "AMT_GOODS_PRICE",
+    "DAYS_BIRTH", "DAYS_EMPLOYED",
 ]
 
-top_cols = pick_top_features(schema, k=10) if schema else DEFAULT_TOP
+top_cols = pick_top_features(schema, k=6) if schema else DEFAULT_TOP
 
 # -----------------------------------------------------------------------------
 # Libellés FR d'affichage (clé = nom de colonne du dataset)
 # -----------------------------------------------------------------------------
 COL_LABELS = {
-    "AMT_INCOME_TOTAL": "Revenu total annuel (€)",
-    "AMT_CREDIT": "Montant du crédit (€)",
-    "AMT_ANNUITY": "Mensualité (annuité) (€)",
-    "AMT_GOODS_PRICE": "Prix du bien (€)",
+    "AMT_INCOME_TOTAL": "Revenu total annuel ($)",
+    "AMT_CREDIT": "Montant du crédit ($)",
+    "AMT_ANNUITY": "Mensualité (annuité) ($)",
+    "AMT_GOODS_PRICE": "Prix du bien ($)",
     "NAME_INCOME_TYPE": "Type de revenu",
     "DAYS_BIRTH": "Âge (date de naissance)",
     "DAYS_EMPLOYED": "Jours d'emploi (négatifs si en cours)",
