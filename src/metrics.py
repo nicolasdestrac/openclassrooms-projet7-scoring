@@ -126,15 +126,22 @@ def evaluate_all(y_true, y_prob, cost_fn: float, cost_fp: float, grid_points: in
     }
 
 # --- Scorer sklearn pour GridSearch/RandomizedSearch ---
-def business_cost_min_threshold(y_true, y_proba, fn_cost=10.0, fp_cost=1.0, grid=501):
-    """Coût minimal sur un balayage de seuils : plus c'est petit, mieux c'est."""
+
+def business_cost_min_threshold(y_true, y_score, fn_cost=10.0, fp_cost=1.0, grid=501):
+    """Coût minimal sur un balayage de seuils (plus c'est petit, mieux c'est).
+    y_score: scores continus (proba ou decision_function)."""
     thr = np.linspace(0.0, 1.0, int(grid))
     y_true = np.asarray(y_true).astype(int)
-    y_proba = np.asarray(y_proba, dtype=float)
+    y_score = np.asarray(y_score, dtype=float)
+
+    # Si ce ne sont pas des proba (ex: decision_function log-reg),
+    # on les passe par une sigmoïde pour retomber dans [0,1].
+    if y_score.min() < 0.0 or y_score.max() > 1.0:
+        y_score = 1.0 / (1.0 + np.exp(-y_score))
 
     best = None
     for t in thr:
-        y_pred = (y_proba >= t).astype(int)
+        y_pred = (y_score >= t).astype(int)
         fp = int(((y_true == 0) & (y_pred == 1)).sum())
         fn = int(((y_true == 1) & (y_pred == 0)).sum())
         cost = fn_cost * fn + fp_cost * fp
@@ -143,12 +150,14 @@ def business_cost_min_threshold(y_true, y_proba, fn_cost=10.0, fp_cost=1.0, grid
     return float(best)
 
 def make_business_scorer(fn_cost=10.0, fp_cost=1.0, grid=501):
-    """Scorer négatif (greater_is_better=False) utilisable en GridSearchCV."""
-    return make_scorer(
-        business_cost_min_threshold,
-        needs_proba=True,
-        greater_is_better=False,
-        fn_cost=float(fn_cost),
-        fp_cost=float(fp_cost),
-        grid=int(grid),
-    )
+    """Scorer utilisable en GridSearchCV. On retourne -coût (à maximiser)."""
+    def _scorer(estimator, X, y_true):
+        # On force l’usage des probabilités (classe positive colonne 1).
+        if hasattr(estimator, "predict_proba"):
+            y_score = estimator.predict_proba(X)[:, 1]
+        else:
+            # secours : decision_function + sigmoïde
+            y_score = estimator.decision_function(X)
+        cost = business_cost_min_threshold(y_true, y_score, fn_cost=fn_cost, fp_cost=fp_cost, grid=grid)
+        return -float(cost)  # GridSearch maximise → on maximise (-coût)
+    return _scorer
