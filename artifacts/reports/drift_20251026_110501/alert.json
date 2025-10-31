@@ -1,0 +1,12 @@
+{
+  "alert": false,
+  "reason": "no_alert",
+  "threshold": 0.3,
+  "metrics": {
+    "dataset_drift": false,
+    "n_cols": 110,
+    "n_drifted": 10,
+    "share_drifted": 0.09090909090909091
+  },
+  "report_html": "artifacts/reports/drift_20251026_110501/evidently_data_drift_report.html"
+}

@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 import os, io, json
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from datetime import date
 
 import pandas as pd
 import requests
 import streamlit as st
+import matplotlib.pyplot as plt
 
 # -----------------------------------------------------------------------------
 # 1) Config de page
@@ -15,13 +16,12 @@ import streamlit as st
 st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
 
 # -----------------------------------------------------------------------------
-# Helpers "secrets" sûrs (privilégie l'env, ne lit st.secrets que si le fichier existe)
+# Helpers "secrets" sûrs
 # -----------------------------------------------------------------------------
 def get_secret_env_first(key: str, default: str = "") -> str:
     v = os.getenv(key)
     if v:
         return v.strip()
-
     try:
         secrets_paths = [
             Path(".streamlit/secrets.toml"),
@@ -29,35 +29,27 @@ def get_secret_env_first(key: str, default: str = "") -> str:
             Path("/opt/render/project/src/.streamlit/secrets.toml"),
         ]
         if any(p.exists() for p in secrets_paths):
-            # st.secrets.get -> None si absent
             return str(st.secrets.get(key, default)).strip()
     except Exception:
         pass
     return default
 
-# -----------------------------------------------------------------------------
-# Config (API + features à privilégier dans l'onglet Simple)
-# -----------------------------------------------------------------------------
 API_URL = get_secret_env_first("API_URL")
 TOP_FEATURES_SECRET = get_secret_env_first("TOP_FEATURES", "")
 
 st.title("Projet 7 — Scoring")
 
 if not API_URL:
-    st.error(
-        "API_URL manquant. Ajoutez la variable d'environnement **API_URL** dans "
-        "Render → Settings → Environment, ou fournis `.streamlit/secrets.toml`."
-    )
+    st.error("API_URL manquant. Ajoutez la variable d'environnement **API_URL** (Render → Settings → Environment).")
     st.stop()
 
-API_BASE = API_URL.rstrip("/")  # évite //schema & co
+API_BASE = API_URL.rstrip("/")
 st.caption(f"API: {API_BASE}")
 
 # -----------------------------------------------------------------------------
-# Fetch helpers (retournent (data, error_str))
+# Fetch helpers
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_json(url: str):
+def fetch_json(url: str) -> Tuple[Dict, str|None]:
     try:
         r = requests.get(url, timeout=15)
         r.raise_for_status()
@@ -85,21 +77,17 @@ with st.expander("État API / Schéma", expanded=False):
         st.write(f"**{len(schema)} colonnes attendues**")
         st.code("\n".join(schema))
     if schema_err:
-        st.warning(f"Erreur lors de l’appel /schema : {schema_err}")
+        st.warning(f"Erreur /schema : {schema_err}")
 
 # -----------------------------------------------------------------------------
-# Sélection guidée de colonnes (et fallback si /schema vide)
+# Colonnes à privilégier (onglet Simple)
 # -----------------------------------------------------------------------------
 def pick_top_features(all_cols: List[str], k: int = 6) -> List[str]:
-    # priorité à TOP_FEATURES si fournie (ex: "AMT_INCOME_TOTAL,AMT_CREDIT,DAYS_BIRTH")
     if TOP_FEATURES_SECRET:
         want = [c.strip() for c in TOP_FEATURES_SECRET.split(",") if c.strip()]
-        # si tout n'est pas dans all_cols, on renvoie quand même l'ordre demandé
         return [c for c in want if (not all_cols or c in all_cols)] or want
-
     if not all_cols:
         return []
-
     key_words = ("AMT", "DAYS", "CREDIT", "INCOME", "EXT_SOURCE", "AGE", "SCORE", "AMT_")
     ranked = sorted(all_cols, key=lambda c: any(k in c.upper() for k in key_words), reverse=True)
     seen, out = set(), []
@@ -110,15 +98,11 @@ def pick_top_features(all_cols: List[str], k: int = 6) -> List[str]:
             break
     return out
 
-DEFAULT_TOP = [
-    "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
-    "DAYS_BIRTH", "DAYS_EMPLOYED",
-]
-
+DEFAULT_TOP = ["AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY", "DAYS_BIRTH", "DAYS_EMPLOYED"]
 top_cols = pick_top_features(schema, k=6) if schema else DEFAULT_TOP
 
 # -----------------------------------------------------------------------------
-# Libellés FR d'affichage (clé = nom de colonne du dataset)
+# Libellés FR & widgets
 # -----------------------------------------------------------------------------
 COL_LABELS = {
     "AMT_INCOME_TOTAL": "Revenu total annuel ($)",
@@ -131,18 +115,10 @@ COL_LABELS = {
     "DAYS_REGISTRATION": "Jours depuis l'enregistrement",
     "DAYS_ID_PUBLISH": "Jours depuis émission de la pièce d'identité",
     "OWN_CAR_AGE": "Âge du véhicule (années)",
-    # … complèter avec les autres colonnes si besoin
 }
 def fr_label(colname: str) -> str:
-    """Libellé français à afficher pour une colonne."""
-    if colname in COL_LABELS:
-        return COL_LABELS[colname]
-    # fallback lisible si non mappé
-    return colname.replace("_", " ").title()
+    return COL_LABELS.get(colname, colname.replace("_", " ").title())
 
-# -----------------------------------------------------------------------------
-# Libellés FR -> codes bruts du dataset (Home Credit)
-# -----------------------------------------------------------------------------
 INCOME_TYPE_CHOICES = [
     ("Salarié",               "Working"),
     ("Fonctionnaire",         "State servant"),
@@ -155,23 +131,11 @@ INCOME_TYPE_CHOICES = [
 ]
 INCOME_TYPE_FR = [fr for fr, _ in INCOME_TYPE_CHOICES]
 
-# -----------------------------------------------------------------------------
-# Widgets "smart" pour l’onglet Simple
-# -----------------------------------------------------------------------------
 def _is_money(col: str) -> bool:
     cu = col.upper()
     return cu.startswith("AMT_") or cu.endswith("_AMT") or "AMT" in cu
 
 def render_input_for(colname: str):
-    """
-    Rend un widget adapté et renvoie la valeur (ou None si non saisie).
-    - Montants -> 2 décimales
-    - DAYS_BIRTH -> date-picker puis conversion en jours négatifs
-    - Autres DAYS_* -> entier
-    - RATIO/SCORE -> 4 décimales
-    - NAME_* -> texte
-    - Par défaut -> numérique 6 décimales
-    """
     label = fr_label(colname)
     cu = colname.upper()
 
@@ -195,7 +159,6 @@ def render_input_for(colname: str):
         return float(val) if val != 0.0 else None
 
     if cu == "NAME_INCOME_TYPE":
-        # Selectbox avec options FR ; on renvoie le code brut du dataset
         choix_fr = st.selectbox(
             label,
             options=["— Sélectionner —"] + INCOME_TYPE_FR + ["Autre (saisie libre)"],
@@ -207,61 +170,115 @@ def render_input_for(colname: str):
         if choix_fr == "Autre (saisie libre)":
             libre = st.text_input("Type de revenu (texte libre)", key=f"{colname}_free")
             return libre.strip() or None
-        # map FR -> code dataset
-        code = dict(INCOME_TYPE_CHOICES).get(choix_fr)
-        return code
+        return dict(INCOME_TYPE_CHOICES).get(choix_fr)
 
-    # Fallback générique pour d'autres NAME_*
     if cu.startswith("NAME_"):
         txt = st.text_input(label, value="", key=f"{colname}_text")
         return txt.strip() or None
 
-
     val = st.number_input(label, value=0.0, step=1.0, format="%.6f", key=f"{colname}_num")
     return float(val) if val != 0.0 else None
 
-def call_api(endpoint: str, payload: Dict) -> Dict:
-    r = requests.post(f"{API_BASE}{endpoint}", json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json()
+def call_api(endpoint: str, payload: Dict = None, method: str = "POST") -> Dict:
+    url = f"{API_BASE}{endpoint}"
+    try:
+        if method.upper() == "GET":
+            r = requests.get(url, timeout=20)
+        else:
+            r = requests.post(url, json=payload or {}, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        raise RuntimeError(f"Appel {endpoint} échoué : {e}")
 
 # -----------------------------------------------------------------------------
 # UI principale
 # -----------------------------------------------------------------------------
 tab_simple, tab_json, tab_csv = st.tabs(["🧩 Simple", "💻 JSON avancé", "📄 CSV (1 ligne)"])
 
+def render_decision(prob: float, thr: float):
+    """Carte de décision + jauge."""
+    pred = int(prob >= thr)
+    label = "✅ ACCEPTÉ" if pred == 0 else "❌ REFUSÉ"  # selon ta convention y=1 = défaut
+    color = "#16a34a" if label.startswith("✅") else "#dc2626"
+
+    st.markdown(
+        f"""
+        <div style="padding:14px;border:1px solid #e5e7eb;border-radius:12px;">
+          <div style="font-size:20px;font-weight:700;color:{color};margin-bottom:6px;">{label}</div>
+          <div>Probabilité de défaut estimée : <b>{prob:.1%}</b></div>
+          <div>Seuil métier : <b>{thr:.1%}</b></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.progress(min(max(prob, 0.0), 1.0))
+
+def render_shap_bar(contrib: Dict[str, float], top_k: int = 10):
+    """Barres horizontales des contributions (valeurs SHAP) top_k."""
+    if not contrib:
+        st.info("Explication indisponible pour cette observation.")
+        return
+    # tri par contribution absolue
+    items = sorted(contrib.items(), key=lambda kv: abs(kv[1]), reverse=True)[:top_k]
+    labels = [fr_label(k) for k, _ in items][::-1]
+    vals   = [v for _, v in items][::-1]
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    ax.barh(labels, vals)
+    ax.axvline(0, linestyle="--", linewidth=1)
+    ax.set_title("Facteurs qui influencent la décision (SHAP)")
+    ax.set_xlabel("Contribution vers REFUS ( + ) / ACCEPTATION ( – )")
+    plt.tight_layout()
+    st.pyplot(fig)
+
 with tab_simple:
     st.write("Renseignez quelques variables utiles. Les colonnes manquantes seront imputées par le pipeline.")
-
     if not schema:
         st.info("Le schéma n'a pas été récupéré — basculez sur l’onglet **JSON avancé** ou **CSV**.")
 
     features = {}
     cols = st.columns(2) if len(top_cols) > 1 else [st]
-
     for i, colname in enumerate(top_cols):
         with cols[i % len(cols)]:
             val = render_input_for(colname)
             if val is not None:
                 features[colname] = val
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Prédire (classe)", use_container_width=True):
+    col_action1, col_action2 = st.columns(2)
+    with col_action1:
+        predict_clicked = st.button("Prédire (classe)", use_container_width=True)
+    with col_action2:
+        proba_clicked = st.button("Probabilité (score)", use_container_width=True)
+
+    if predict_clicked or proba_clicked:
+        try:
+            with st.spinner("Appel API..."):
+                if predict_clicked:
+                    resp = call_api("/predict", {"features": features})
+                    prob, thr = float(resp["probability"]), float(resp["threshold"])
+                else:
+                    resp = call_api("/predict_proba", {"features": features})
+                    prob = float(resp["probability"])
+                    thr = float(health.get("threshold", 0.5))
+            render_decision(prob, thr)
+
+            # --- Tentative d'explication locale via /explain ---
             try:
-                resp = call_api("/predict", {"features": features})
-                st.success("Réponse API /predict")
-                st.code(json.dumps(resp, indent=2, ensure_ascii=False))
+                explain = call_api("/explain", {"features": features})
+                # attendu: {"base_value":..., "contrib": {"feat": shap_value, ...}}
+                contrib = explain.get("contrib", {})
+                if contrib:
+                    st.divider()
+                    render_shap_bar(contrib, top_k=10)
             except Exception as e:
-                st.error(f"Erreur /predict : {e}")
-    with c2:
-        if st.button("Probabilité (score)", use_container_width=True):
-            try:
-                resp = call_api("/predict_proba", {"features": features})
-                st.success("Réponse API /predict_proba")
-                st.code(json.dumps(resp, indent=2, ensure_ascii=False))
-            except Exception as e:
-                st.error(f"Erreur /predict_proba : {e}")
+                st.info("Explication SHAP indisponible (endpoint /explain non exposé).")
+
+            st.caption("La prédiction binaire utilise le seuil métier (coûts FN/FP). "
+                       "Le score affiché est la probabilité estimée de défaut (`P(y=1)`).")
+            st.code(json.dumps(resp, indent=2, ensure_ascii=False))
+        except Exception as e:
+            st.error(str(e))
 
     if features:
         st.markdown("**Exemple `curl`**")
@@ -273,32 +290,32 @@ with tab_simple:
         )
 
 with tab_json:
-    st.write("Collez un JSON complet pour `features` (toutes colonnes ou un sous-ensemble).")
+    st.write("Collez un JSON pour `features` (toutes colonnes ou un sous-ensemble).")
     example = {"AMT_INCOME_TOTAL": 200000, "AMT_CREDIT": 4430}
     raw = st.text_area("JSON", value=json.dumps({"features": example}, indent=2), height=180)
-
     c1, c2 = st.columns(2)
     if c1.button("Prédire (classe)"):
         try:
             payload = json.loads(raw)
             resp = call_api("/predict", payload)
-            st.success("Réponse API /predict")
+            prob, thr = float(resp["probability"]), float(resp["threshold"])
+            render_decision(prob, thr)
             st.code(json.dumps(resp, indent=2, ensure_ascii=False))
         except Exception as e:
             st.error(f"Erreur : {e}")
-
     if c2.button("Probabilité (score)"):
         try:
             payload = json.loads(raw)
             resp = call_api("/predict_proba", payload)
-            st.success("Réponse API /predict_proba")
+            prob = float(resp["probability"])
+            thr = float(health.get("threshold", 0.5))
+            render_decision(prob, thr)
             st.code(json.dumps(resp, indent=2, ensure_ascii=False))
         except Exception as e:
             st.error(f"Erreur : {e}")
 
 with tab_csv:
-    st.write("Chargez un CSV contenant **une seule ligne** (ou choisissez la ligne à scorer). "
-             "Les noms de colonnes doivent matcher au mieux `/schema`.")
+    st.write("Chargez un CSV (1 ligne) ou choisissez la ligne à scorer. Les noms de colonnes doivent coller à `/schema`.")
     up = st.file_uploader("CSV", type=["csv"])
     if up:
         try:
@@ -315,7 +332,8 @@ with tab_csv:
                 if st.button("Scorer la ligne CSV"):
                     try:
                         resp = call_api("/predict", {"features": row})
-                        st.success("Réponse API /predict")
+                        prob, thr = float(resp["probability"]), float(resp["threshold"])
+                        render_decision(prob, thr)
                         st.code(json.dumps(resp, indent=2, ensure_ascii=False))
                     except Exception as e:
                         st.error(f"Erreur /predict : {e}")

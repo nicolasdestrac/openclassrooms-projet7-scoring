@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import json
 import os
+import shap
 
 # -----------------------------
 # Chemins et artefacts modèle
@@ -128,3 +129,70 @@ def predict(payload: PredictPayload):
         return {"probability": float(proba), "prediction": pred, "threshold": DECISION_THRESHOLD}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur prédiction: {e}")
+
+@app.post("/explain")
+def explain(payload: PredictPayload):
+    """
+    Retourne les contributions SHAP pour l'observation fournie.
+    Format:
+    {
+      "base_value": float,
+      "contrib": {"feature_name": shap_value, ...}   # top 20 par |valeur|
+    }
+    """
+    try:
+        X_row = _row_from_payload(payload.features)
+        # Récupère preprocessor + clf
+        prep = pipe.named_steps.get("prep")
+        clf  = pipe.named_steps.get("clf")
+
+        # Noms de features après transformation (OHE, etc.)
+        try:
+            feat_names = prep.get_feature_names_out()
+        except Exception:
+            # fallback si indisponible
+            Xt = prep.transform(X_row)
+            feat_names = [f"f_{i}" for i in range(Xt.shape[1])]
+
+        # Transforme X pour l'explainer
+        Xt = prep.transform(X_row)
+
+        # Explainer adapté
+        contrib = {}
+        base_value = None
+
+        if hasattr(clf, "predict_proba"):
+            # LGBM/Tree-based -> TreeExplainer
+            try:
+                expl = shap.TreeExplainer(clf)
+                sv = expl.shap_values(Xt)
+                # shap >=0.41: sv est un object ; sinon liste [class0, class1]
+                # On prend classe 1 (défaut)
+                if isinstance(sv, list) and len(sv) > 1:
+                    vals = sv[1][0]  # (n_features,)
+                    base_value = float(expl.expected_value[1])
+                else:
+                    vals = np.array(sv.values[0]) if hasattr(sv, "values") else np.array(sv[0])
+                    base_value = float(sv.base_values[0]) if hasattr(sv, "base_values") else None
+            except Exception:
+                # Secours: KernelExplainer (plus lent)
+                f = lambda Z: clf.predict_proba(Z)[:,1]
+                bg = np.zeros((50, Xt.shape[1]))  # fond neutre
+                expl = shap.KernelExplainer(f, bg)
+                vals = expl.shap_values(Xt, nsamples=100)[0]
+                base_value = float(expl.expected_value)
+        else:
+            raise RuntimeError("Modèle sans predict_proba.")
+
+        # Construit dict {feat_name: shap_value}
+        for name, v in zip(feat_names, np.asarray(vals).ravel()):
+            contrib[str(name)] = float(v)
+
+        # Garde le top 20 par importance absolue
+        items = sorted(contrib.items(), key=lambda kv: abs(kv[1]), reverse=True)[:20]
+        contrib_top = {k: v for k, v in items}
+
+        return {"base_value": base_value, "contrib": contrib_top}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erreur d'explication: {e}")

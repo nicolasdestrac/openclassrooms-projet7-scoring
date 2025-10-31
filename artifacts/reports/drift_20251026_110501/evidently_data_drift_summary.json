@@ -1,0 +1,6 @@
+{
+  "dataset_drift": false,
+  "n_cols": 110,
+  "n_drifted": 10,
+  "share_drifted": 0.09090909090909091
+}

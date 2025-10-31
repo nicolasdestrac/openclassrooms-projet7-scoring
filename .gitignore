@@ -6,6 +6,7 @@ reports/*
 mlruns/
 mlflow.db
 pdf/*
+artifacts/*
 
 # Env & locaux
 .venv/

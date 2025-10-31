@@ -53,8 +53,8 @@ artifacts:
 
 # Tuning
 tuning:
-  method: "grid"        # "grid" ou "random"
-  n_iter: 40            # seulement pour method=random
+  method: "random"        # "grid" ou "random"
+  n_iter: 25            # seulement pour method=random
   n_jobs: -1
   cv: 5
   verbose: 2
