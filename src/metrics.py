@@ -125,39 +125,26 @@ def evaluate_all(y_true, y_prob, cost_fn: float, cost_fp: float, grid_points: in
         "confusion_05": cm_05,
     }
 
-# --- Scorer sklearn pour GridSearch/RandomizedSearch ---
-
-def business_cost_min_threshold(y_true, y_score, fn_cost=10.0, fp_cost=1.0, grid=501):
-    """Coût minimal sur un balayage de seuils (plus c'est petit, mieux c'est).
-    y_score: scores continus (proba ou decision_function)."""
-    thr = np.linspace(0.0, 1.0, int(grid))
-    y_true = np.asarray(y_true).astype(int)
-    y_score = np.asarray(y_score, dtype=float)
-
-    # Si ce ne sont pas des proba (ex: decision_function log-reg),
-    # on les passe par une sigmoïde pour retomber dans [0,1].
-    if y_score.min() < 0.0 or y_score.max() > 1.0:
-        y_score = 1.0 / (1.0 + np.exp(-y_score))
-
-    best = None
-    for t in thr:
-        y_pred = (y_score >= t).astype(int)
-        fp = int(((y_true == 0) & (y_pred == 1)).sum())
-        fn = int(((y_true == 1) & (y_pred == 0)).sum())
-        cost = fn_cost * fn + fp_cost * fp
-        if (best is None) or (cost < best):
-            best = cost
-    return float(best)
+# --- Scorer sklearn basé sur le BUSINESS SCORE (dans [0,1], plus haut = mieux) ---
+def _scores_from_estimator(estimator, X):
+    """Retourne un score continu dans [0,1] pour chaque ligne (proba préférée)."""
+    if hasattr(estimator, "predict_proba"):
+        return estimator.predict_proba(X)[:, 1]
+    if hasattr(estimator, "decision_function"):
+        s = estimator.decision_function(X)
+        # secours: on rabat en [0,1]
+        return 1.0 / (1.0 + np.exp(-np.asarray(s, dtype=float)))
+    # dernier recours
+    return estimator.predict(X)
 
 def make_business_scorer(fn_cost=10.0, fp_cost=1.0, grid=501):
-    """Scorer utilisable en GridSearchCV. On retourne -coût (à maximiser)."""
+    """
+    Scorer à passer à GridSearchCV/RandomizedSearchCV.
+    Retourne le 'business_score' (dans [0,1]) => greater_is_better=True implicite.
+    """
     def _scorer(estimator, X, y_true):
-        # On force l’usage des probabilités (classe positive colonne 1).
-        if hasattr(estimator, "predict_proba"):
-            y_score = estimator.predict_proba(X)[:, 1]
-        else:
-            # secours : decision_function + sigmoïde
-            y_score = estimator.decision_function(X)
-        cost = business_cost_min_threshold(y_true, y_score, fn_cost=fn_cost, fp_cost=fp_cost, grid=grid)
-        return -float(cost)  # GridSearch maximise → on maximise (-coût)
+        y_true = np.asarray(y_true, dtype=int)
+        y_score = _scores_from_estimator(estimator, X)
+        res = evaluate_all(y_true, y_score, cost_fn=float(fn_cost), cost_fp=float(fp_cost), grid_points=int(grid))
+        return float(res["business_score"])  # on maximise ce score
     return _scorer

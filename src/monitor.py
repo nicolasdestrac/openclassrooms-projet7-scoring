@@ -32,6 +32,8 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple, List
 
+import os, yaml
+
 import numpy as np
 import pandas as pd
 
@@ -39,6 +41,12 @@ from evidently import ColumnMapping
 from evidently.report import Report
 from evidently.metric_preset import DataDriftPreset
 
+try:
+    from dotenv import load_dotenv
+    # cherche un .env à la racine du projet (ajuste si besoin)
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
 
 # -----------------------------
 # Utilities E/S
@@ -57,6 +65,14 @@ def read_any(path: Path, nrows: Optional[int] = None) -> pd.DataFrame:
 def ensure_dir(p: Path) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+def load_params_yaml(path: Path = Path("conf/params.yaml")) -> dict:
+    if yaml is None:
+        return {}
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 # -----------------------------
@@ -195,21 +211,71 @@ def run_report(
 # -----------------------------
 # MLflow (optionnel)
 # -----------------------------
-def try_log_mlflow(out_dir: Path, payload: dict):
+def resolve_mlflow_config(params: dict) -> tuple[str, str]:
+    """
+    Renvoie (tracking_uri, experiment_name)
+    Priorité :
+      1) Variables d'env indiquées dans params['mlflow'] (ex: MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT)
+      2) Valeurs par défaut définies dans le YAML
+      3) Fallback local ./mlruns
+    """
+    mlp = (params or {}).get("mlflow", {})
+    # Noms de variables d'env (ex: "MLFLOW_TRACKING_URI")
+    tracking_env_name = mlp.get("tracking_uri_env") or "MLFLOW_TRACKING_URI"
+    exp_env_name      = mlp.get("experiment_env")   or "MLFLOW_EXPERIMENT"
+
+    # Valeurs par défaut (ex: "databricks", "/Users/.../projet7")
+    default_tracking  = mlp.get("default_tracking_uri") or ""
+    default_experiment= mlp.get("default_experiment")   or ""
+
+    tracking_uri = os.getenv(tracking_env_name) or default_tracking
+    experiment   = os.getenv(exp_env_name)      or default_experiment
+
+    if not tracking_uri:
+        tracking_uri = "file://" + str((Path.cwd() / "mlruns").resolve())
+    if not experiment:
+        experiment = "Monitoring"
+
+    return tracking_uri, experiment
+
+
+def try_log_mlflow(out_dir: Path, payload: dict, tracking_uri: str, experiment: str, run_name: str = "monitoring_drift"):
     try:
-        import mlflow  # optional
-        with mlflow.start_run(run_name="monitoring_drift"):
+        import mlflow
+
+        mlflow.set_registry_uri(tracking_uri)
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(experiment)
+
+        from mlflow.tracking import MlflowClient
+        try:
+            MlflowClient().list_experiments(max_results=1)
+        except Exception as e:
+            print(f"[mlflow] Auth Databricks requise: {e}")
+
+        print(f"[mlflow] tracking_uri = {mlflow.get_tracking_uri()}")
+        print(f"[mlflow] experiment   = {experiment}")
+
+        with mlflow.start_run(run_name=run_name) as run:
+            print(f"[mlflow] run_id      = {run.info.run_id}")
+
             m = payload["metrics"]
             mlflow.log_metric("share_drifted", m["share_drifted"])
             mlflow.log_metric("n_drifted", m["n_drifted"])
             mlflow.log_metric("n_cols", m["n_cols"])
             mlflow.log_metric("dataset_drift", int(m["dataset_drift"]))
-            for p in ["evidently_data_drift_report.html", "evidently_data_drift_summary.json", "alert.json"]:
+
+            for p in [
+                "evidently_data_drift_report.html",
+                "evidently_data_drift_summary.json",
+                "alert.json",
+            ]:
                 fp = out_dir / p
                 if fp.exists():
                     mlflow.log_artifact(str(fp))
-    except Exception:
-        pass  # MLflow non configuré : on ignore proprement
+            print("[mlflow] artifacts logged.")
+    except Exception as e:
+        print(f"[mlflow] WARNING: logging failed: {e}")
 
 
 # -----------------------------
@@ -245,6 +311,7 @@ def main():
     args = parse_args()
     ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_dir = ensure_dir(Path(args.out) / f"drift_{ts}")
+    params = load_params_yaml(Path("conf/params.yaml"))
 
     # 1) Schéma (optionnel)
     schema_cols: Optional[List[str]] = None
@@ -290,7 +357,14 @@ def main():
 
     # 6) MLflow (optionnel)
     if args.mlflow:
-        try_log_mlflow(out_dir, payload)
+        tracking_uri, experiment = resolve_mlflow_config(params)
+        try_log_mlflow(
+            out_dir=out_dir,
+            payload=payload,
+            tracking_uri=tracking_uri,
+            experiment=experiment,
+            run_name="monitoring_drift",
+        )
 
     # 7) Console
     print("\n=== Evidently — Data Drift ===")
