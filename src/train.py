@@ -7,6 +7,7 @@ import yaml
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import joblib
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -294,6 +295,7 @@ def main(config_path: str = "conf/params.yaml"):
     models_dir  = Path(cfg.artifacts["models_dir"])
     fold_path   = reports_dir / "cv_metrics_by_fold.csv"
     thr_path    = models_dir  / "decision_threshold.json"
+    model_path  = models_dir  / "scoring_model.joblib"
     with open("models/input_columns.json", "w") as f:
         json.dump(list(X.columns), f, ensure_ascii=False, indent=2)
 
@@ -308,6 +310,7 @@ def main(config_path: str = "conf/params.yaml"):
             },
             f,
         )
+    joblib.dump(final_pipe, model_path)
 
     # Artéfacts matrice de confusion OOF
     thr = float(m_oof["threshold_opt"])
