@@ -1,5 +1,3 @@
-# streamlit_app/app.py
-# -*- coding: utf-8 -*-
 import os, io, json
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -80,7 +78,7 @@ with st.expander("État API / Schéma", expanded=False):
         st.warning(f"Erreur /schema : {schema_err}")
 
 # -----------------------------------------------------------------------------
-# Colonnes à privilégier (onglet Simple)
+# Colonnes à privilégier
 # -----------------------------------------------------------------------------
 def pick_top_features(all_cols: List[str], k: int = 6) -> List[str]:
     if TOP_FEATURES_SECRET:

@@ -235,7 +235,7 @@ def plot_and_log_feature_importance(final_pipe, X: pd.DataFrame, models_dir: Pat
         fi_csv = models_dir / "feature_importances.csv"
         fi.to_csv(fi_csv, index=False)
 
-        top = fi.head(30).iloc[::-1]  # barh plus lisible
+        top = fi.head(30).iloc[::-1]
         plt.figure(figsize=(8, 10))
         plt.barh(top["feature"], top["importance"])
         plt.title("Top 30 feature importances")
@@ -358,7 +358,7 @@ def main(config_path: str = "conf/params.yaml"):
     fig.savefig(cmn_png, dpi=150)
     plt.close(fig)
 
-    # Rapport texte (précision/rappel/F1 à partir de ta fonction existante)
+    # Rapport texte (précision/rappel/F1)
     # On recalcule y_pred au seuil optimal pour un petit résumé texte.
     y_true = y.astype(int).to_numpy()
     y_pred = (oof_prob >= thr).astype(int)

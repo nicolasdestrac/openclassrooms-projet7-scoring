@@ -38,7 +38,6 @@ def basic_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def make_train_test(train_raw: pd.DataFrame, test_raw: pd.DataFrame):
-    # applique les mêmes features aux deux jeux
     train = basic_feature_engineering(train_raw)
     test  = basic_feature_engineering(test_raw)
     y = train["TARGET"].astype(int)

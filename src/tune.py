@@ -58,7 +58,7 @@ def setup_mlflow(cfg: Config):
 
 def setup_mlflow_safe(cfg):
     try:
-        setup_mlflow(cfg)  # ta fonction actuelle qui lit 'databricks'
+        setup_mlflow(cfg)
     except MlflowException:
         print("[tune] Databricks indisponible → fallback local MLflow ./mlruns")
         mlflow.set_tracking_uri("file:./mlruns")

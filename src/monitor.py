@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Monitoring de data drift avec Evidently.
 
@@ -43,7 +42,6 @@ from evidently.metric_preset import DataDriftPreset
 
 try:
     from dotenv import load_dotenv
-    # cherche un .env à la racine du projet (ajuste si besoin)
     load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 except Exception:
     pass
@@ -132,7 +130,7 @@ def build_colmap(df: pd.DataFrame, target: Optional[str]) -> ColumnMapping:
 
 
 # -----------------------------
-# Simulation de drift (optionnelle)
+# Simulation de drift
 # -----------------------------
 def simulate_drift(
     df: pd.DataFrame,
@@ -209,7 +207,7 @@ def run_report(
 
 
 # -----------------------------
-# MLflow (optionnel)
+# MLflow
 # -----------------------------
 def resolve_mlflow_config(params: dict) -> tuple[str, str]:
     """
