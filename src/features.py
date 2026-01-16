@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+LOG1P_COLS = ["AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY", "AMT_GOODS_PRICE"]
+
 def basic_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     # Nettoyage DAYS_EMPLOYED
@@ -34,6 +36,13 @@ def basic_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         if a in df.columns and b in df.columns:
             df[f"{a}_x_{b}"]    = df[a] * df[b]
             df[f"{a}_plus_{b}"] = df[a] + df[b]
+
+    # Transformation log1p des montants
+    for c in LOG1P_COLS:
+        if c in df.columns:
+            x = df[c].to_numpy(dtype=float, copy=True)
+            x = np.log1p(np.clip(x, a_min=0, a_max=None))
+            df[c] = x
 
     return df
 
