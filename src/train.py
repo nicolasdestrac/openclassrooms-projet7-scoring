@@ -32,7 +32,7 @@ import shap
 
 from .data import load_raw, ensure_dirs
 from .features import make_train_test
-from .metrics import evaluate_all, confusion_at_threshold
+from .metrics import evaluate_all
 
 # --- Warnings
 warnings.filterwarnings(
@@ -83,22 +83,12 @@ def read_config(path: str) -> "Config":
         cfg = yaml.safe_load(f)
     return Config(**cfg)
 
-def log1p_on_indices(X, idx):
-    X = X.copy()
-    X[:, idx] = np.log1p(np.clip(X[:, idx], a_min=0, a_max=None))
-    return X
-
-LOG_COLS = ["AMT_INCOME_TOTAL","AMT_CREDIT","AMT_ANNUITY","AMT_GOODS_PRICE"]
-
 def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
     num_cols = X.select_dtypes(include=["int64","float64","int32","float32"]).columns.tolist()
     cat_cols = X.select_dtypes(include=["object","category","bool"]).columns.tolist()
 
-    log_idx = [num_cols.index(c) for c in LOG_COLS if c in num_cols]
-
     numeric_transformer = Pipeline(steps=[
         ("imputer", SimpleImputer(strategy="median")),
-        ("log1p", FunctionTransformer(log1p_on_indices, kw_args={"idx": log_idx})),
         ("scaler", StandardScaler(with_mean=False)),
     ])
     categorical_transformer = Pipeline(steps=[
