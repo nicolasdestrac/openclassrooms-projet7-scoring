@@ -10,11 +10,11 @@ from tqdm import tqdm
 import joblib
 
 from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, FunctionTransformer
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.base import clone
+from sklearn.base import clone, BaseEstimator, TransformerMixin
 from sklearn.metrics import roc_auc_score, ConfusionMatrixDisplay
 from sklearn.exceptions import ConvergenceWarning
 
@@ -34,7 +34,7 @@ from .data import load_raw, ensure_dirs
 from .features import make_train_test
 from .metrics import evaluate_all, confusion_at_threshold
 
-# --- Warnings : on fait le ménage ---
+# --- Warnings
 warnings.filterwarnings(
     "ignore",
     category=UserWarning,
@@ -76,19 +76,43 @@ class Config:
     model: dict
     mlflow: dict
     artifacts: dict
-    tuning: dict | None = None  # optionnel
+    tuning: dict | None = None
 
 def read_config(path: str) -> "Config":
     with open(path, "r") as f:
         cfg = yaml.safe_load(f)
     return Config(**cfg)
 
+class Log1pCols(BaseEstimator, TransformerMixin):
+    def __init__(self, cols_idx=None):
+        # ne rien transformer ici, juste assigner
+        self.cols_idx = cols_idx
+
+    def fit(self, X, y=None):
+        # on crée un attribut "appris" sans toucher self.cols_idx
+        self._cols_idx_ = list(self.cols_idx or [])
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        cols = getattr(self, "_cols_idx_", [])
+        for j in cols:
+            x = X[:, j]
+            x = np.where(x < 0, 0.0, x)   # clip des négatifs
+            X[:, j] = np.log1p(x)
+        return X
+
+LOG_COLS = ["AMT_INCOME_TOTAL","AMT_CREDIT","AMT_ANNUITY","AMT_GOODS_PRICE"]
+
 def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
     num_cols = X.select_dtypes(include=["int64","float64","int32","float32"]).columns.tolist()
     cat_cols = X.select_dtypes(include=["object","category","bool"]).columns.tolist()
 
+    log_idx = [num_cols.index(c) for c in LOG_COLS if c in num_cols]
+
     numeric_transformer = Pipeline(steps=[
         ("imputer", SimpleImputer(strategy="median")),
+        ("log1p", Log1pCols(cols_idx=log_idx)),
         ("scaler", StandardScaler(with_mean=False)),
     ])
     categorical_transformer = Pipeline(steps=[
