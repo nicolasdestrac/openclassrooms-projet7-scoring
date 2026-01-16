@@ -5,7 +5,7 @@ gunicorn==23.0.0
 joblib==1.5.2
 numpy==2.2.6
 pandas==2.3.3
-scikit-learn==1.7.2
+scikit-learn==1.7.1
 lightgbm==4.6.0
 pydantic==2.12.3
 shap>=0.45.0

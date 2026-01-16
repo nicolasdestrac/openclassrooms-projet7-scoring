@@ -14,7 +14,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler, FunctionTransfo
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.base import clone, BaseEstimator, TransformerMixin
+from sklearn.base import clone
 from sklearn.metrics import roc_auc_score, ConfusionMatrixDisplay
 from sklearn.exceptions import ConvergenceWarning
 
@@ -83,24 +83,10 @@ def read_config(path: str) -> "Config":
         cfg = yaml.safe_load(f)
     return Config(**cfg)
 
-class Log1pCols(BaseEstimator, TransformerMixin):
-    def __init__(self, cols_idx=None):
-        # ne rien transformer ici, juste assigner
-        self.cols_idx = cols_idx
-
-    def fit(self, X, y=None):
-        # on crée un attribut "appris" sans toucher self.cols_idx
-        self._cols_idx_ = list(self.cols_idx or [])
-        return self
-
-    def transform(self, X):
-        X = X.copy()
-        cols = getattr(self, "_cols_idx_", [])
-        for j in cols:
-            x = X[:, j]
-            x = np.where(x < 0, 0.0, x)   # clip des négatifs
-            X[:, j] = np.log1p(x)
-        return X
+def log1p_on_indices(X, idx):
+    X = X.copy()
+    X[:, idx] = np.log1p(np.clip(X[:, idx], a_min=0, a_max=None))
+    return X
 
 LOG_COLS = ["AMT_INCOME_TOTAL","AMT_CREDIT","AMT_ANNUITY","AMT_GOODS_PRICE"]
 
@@ -112,7 +98,7 @@ def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
 
     numeric_transformer = Pipeline(steps=[
         ("imputer", SimpleImputer(strategy="median")),
-        ("log1p", Log1pCols(cols_idx=log_idx)),
+        ("log1p", FunctionTransformer(log1p_on_indices, kw_args={"idx": log_idx})),
         ("scaler", StandardScaler(with_mean=False)),
     ])
     categorical_transformer = Pipeline(steps=[
