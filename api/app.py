@@ -1,3 +1,27 @@
+"""
+Scoring API
+===========
+
+Expose une API REST (FastAPI) pour :
+- obtenir le schéma d'entrée (`/schema`) ;
+- calculer une probabilité (`/predict_proba`) ;
+- produire une décision binaire avec seuil métier (`/predict`) ;
+- expliquer localement une prédiction via SHAP (`/explain`).
+
+Artefacts requis (dans MODEL_DIR, par défaut `models/`) :
+- `scoring_model.joblib` : sklearn Pipeline (preprocessor + estimator) ;
+- `decision_threshold.json` : {"threshold": float} ;
+- `input_columns.json` : liste ordonnée des colonnes attendues.
+
+Variables d’environnement utiles :
+- MODEL_DIR            : dossier des artefacts ;
+- FRONTEND_ORIGINS     : origines CORS autorisées, séparées par des virgules.
+
+Exceptions
+----------
+- RuntimeError si les artefacts indispensables sont introuvables au démarrage.
+"""
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -74,9 +98,18 @@ class PredictPayload(BaseModel):
 # -----------------------------
 def _row_from_payload(payload: dict) -> pd.DataFrame:
     """
-    Construit une ligne dataframe à partir du dict de features.
-    - Ajoute les colonnes manquantes avec NaN
-    - Réordonne les colonnes pour correspondre à INPUT_COLUMNS
+    Construit une unique ligne d'entrée alignée sur le schéma attendu.
+
+    Parameters
+    ----------
+    payload : dict
+        Dictionnaire {feature: valeur} reçu dans la requête.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame 1xN avec toutes les colonnes `INPUT_COLUMNS`
+        (les colonnes manquantes sont remplies avec NaN).
     """
     df = pd.DataFrame([payload])
     for c in INPUT_COLUMNS:
@@ -99,6 +132,7 @@ def root():
 
 @app.get("/health")
 def health():
+    """Vérifie la disponibilité de l’API et retourne quelques métadonnées (seuil, nb de colonnes, etc.)."""
     return {
         "status": "ok",
         "model_dir": MODEL_DIR,
@@ -109,10 +143,26 @@ def health():
 
 @app.get("/schema")
 def schema():
+    """Retourne la liste ordonnée des colonnes d’entrée attendues par le modèle."""
     return {"input_columns": INPUT_COLUMNS}
 
 @app.post("/predict_proba")
 def predict_proba(payload: PredictPayload):
+    """
+    Calcule la probabilité de défaut (classe 1).
+
+    Body
+    ----
+    {"features": {...}}
+
+    Returns
+    -------
+    {"probability": float}
+
+    Raises
+    ------
+    HTTPException(400) en cas d’erreur de préparation des features ou d’inférence.
+    """
     try:
         X = _row_from_payload(payload.features)
         proba = pipe.predict_proba(X)[:, 1].item()
@@ -122,6 +172,17 @@ def predict_proba(payload: PredictPayload):
 
 @app.post("/predict")
 def predict(payload: PredictPayload):
+    """
+    Renvoie la décision binaire en appliquant le seuil métier.
+
+    Returns
+    -------
+    {
+      "probability": float,
+      "prediction": int,    # 0/1
+      "threshold": float
+    }
+    """
     try:
         X = _row_from_payload(payload.features)
         proba = pipe.predict_proba(X)[:, 1].item()
@@ -133,12 +194,19 @@ def predict(payload: PredictPayload):
 @app.post("/explain")
 def explain(payload: PredictPayload):
     """
-    Retourne les contributions SHAP pour l'observation fournie.
-    Format:
+    Explique localement la prédiction via SHAP.
+
+    Returns
+    -------
     {
-      "base_value": float,
-      "contrib": {"feature_name": shap_value, ...}   # top 20 par |valeur|
+      "base_value": float | None,
+      "contrib": {feature_name: shap_value, ...}   # Top 20 par importance absolue
     }
+
+    Notes
+    -----
+    - Utilise TreeExplainer si le modèle est arborescent, sinon KernelExplainer (plus lent).
+    - Les noms de features après preprocessing proviennent de `preprocessor.get_feature_names_out()`.
     """
     try:
         X_row = _row_from_payload(payload.features)

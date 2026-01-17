@@ -1,3 +1,28 @@
+"""
+Training script
+===============
+
+Entraîne un modèle de scoring crédit avec validation croisée OOF, loggue les
+expérimentations dans MLflow, puis exporte les artefacts pour l’API.
+
+Principales étapes
+------------------
+1. Lecture de la config YAML (données, coûts, modèle, CV, tuning, MLflow).
+2. Feature engineering + construction du préprocesseur (num/cat).
+3. Cross-validation OOF : métriques classiques + métriques métier par fold.
+4. Refit final sur l’ensemble train avec le meilleur set d’hyperparamètres.
+5. Calcul du seuil optimal t* (coût métier) et export des artefacts :
+   - `models/scoring_model.joblib`
+   - `models/decision_threshold.json`
+   - `models/input_columns.json`
+6. Tracking MLflow : paramètres, métriques OOF, artefacts, modèle (signature).
+
+Notes
+-----
+- Compatible Databricks MLflow (URI `databricks`) comme backend.
+- Le modèle final est une Pipeline sklearn (prep + estimator).
+"""
+
 import os, json, re, logging, warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,11 +104,35 @@ class Config:
     tuning: dict | None = None
 
 def read_config(path: str) -> "Config":
+    """
+    Lit le YAML de configuration et retourne un objet/namespace `cfg`.
+
+    Le YAML inclut au minimum :
+    - chemins des CSV ;
+    - paramètres de CV ;
+    - coûts métier (fn/fp) + taille de grille de seuils ;
+    - type de modèle et hyperparamètres ;
+    - section MLflow (tracking URI & experiment).
+    """
     with open(path, "r") as f:
         cfg = yaml.safe_load(f)
     return Config(**cfg)
 
 def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
+    """
+    Construit un `ColumnTransformer` avec :
+    - numériques : SimpleImputer(median) + StandardScaler(with_mean=False)
+    - catégorielles : SimpleImputer(most_frequent) + OneHotEncoder(ignore)
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Jeu d’entraînement (pour déduire types et colonnes).
+
+    Returns
+    -------
+    sklearn.compose.ColumnTransformer
+    """
     num_cols = X.select_dtypes(include=["int64","float64","int32","float32"]).columns.tolist()
     cat_cols = X.select_dtypes(include=["object","category","bool"]).columns.tolist()
 
