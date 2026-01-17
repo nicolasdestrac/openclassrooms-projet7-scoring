@@ -1,3 +1,16 @@
+"""
+Metrics (métier & classiques)
+=============================
+
+Définit :
+- le coût métier : `cost = FN*cost_fn + FP*cost_fp` pour un seuil donné ;
+- le `business_score` dans [0,1] (1 = parfait, 0 = aussi mauvais que la pire politique) ;
+- fonctions pour calculer courbes/agrégations utiles (AUC, AP, Brier, KS, confusion à seuil t*).
+
+Ces fonctions sont utilisées à la fois en CV (OOF), dans le tuning et pour logger
+dans MLflow.
+"""
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
@@ -5,7 +18,6 @@ from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
     roc_curve,
-    make_scorer,
 )
 
 def confusion_at_threshold(y_true, y_prob, threshold: float):

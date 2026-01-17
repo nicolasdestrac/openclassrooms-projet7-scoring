@@ -1,3 +1,21 @@
+"""
+Monitoring & Data Drift
+=======================
+
+Génère, à partir d’un *reference set* (train) et d’un *current set* (test/production),
+un rapport Evidently (HTML) sur :
+- drift de features ;
+- drift de la cible (si disponible) ;
+- stabilité globale de la distribution.
+
+Le HTML produit est stocké dans `reports/` et peut être servi ou partagé.
+
+Notes
+-----
+- Ce script simule la production à partir du dataset test.
+- En prod, brancher sur les événements réellement scorés et historisés.
+"""
+
 import os, json, warnings, yaml
 import numpy as np
 from pathlib import Path
