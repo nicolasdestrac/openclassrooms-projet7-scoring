@@ -1,9 +1,39 @@
+"""
+Feature engineering
+===================
+
+Rassemble les transformations **manuelles** indépendantes du préprocesseur sklearn
+(ex. nettoyage `DAYS_EMPLOYED`, ratios financiers, interactions EXT_SOURCE, etc.).
+
+Ces fonctions sont utilisées avant la séparation X/y et la construction du pipeline.
+"""
+
 import numpy as np
 import pandas as pd
 
 LOG1P_COLS = ["AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY", "AMT_GOODS_PRICE"]
 
 def basic_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Applique des règles de nettoyage et crée des features dérivées.
+
+    Étapes effectuées
+    -----------------
+    - Remplacement des valeurs sentinelles de `DAYS_EMPLOYED` par NaN.
+    - Construction des âges et ancienneté en années.
+    - Ratios financiers robustes (division avec epsilon).
+    - Interactions entre EXT_SOURCE (produits et sommes).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Données brutes.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copie transformée de `df`.
+    """
     df = df.copy()
     # Nettoyage DAYS_EMPLOYED
     if "DAYS_EMPLOYED" in df.columns:
@@ -47,6 +77,26 @@ def basic_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def make_train_test(train_raw: pd.DataFrame, test_raw: pd.DataFrame):
+    """
+    Applique des règles de nettoyage et crée des features dérivées.
+
+    Étapes effectuées
+    -----------------
+    - Remplacement des valeurs sentinelles de `DAYS_EMPLOYED` par NaN.
+    - Construction des âges et ancienneté en années.
+    - Ratios financiers robustes (division avec epsilon).
+    - Interactions entre EXT_SOURCE (produits et sommes).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Données brutes.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copie transformée de `df`.
+    """
     train = basic_feature_engineering(train_raw)
     test  = basic_feature_engineering(test_raw)
     y = train["TARGET"].astype(int)

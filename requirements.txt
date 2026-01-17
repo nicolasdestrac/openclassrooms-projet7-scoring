@@ -1,32 +1,32 @@
 # Core
-pandas>=2.3.2
-numpy=2.2.6
-scikit-learn=1.7.1
-lightgbm>=4.6.0
-xgboost>=3.0.4
+pandas==2.3.2
+numpy==2.2.6
+scikit-learn==1.7.1
+lightgbm==4.6.0
+xgboost==3.0.4
 
 # Visualisation & EDA
-matplotlib>=3.10.5
-seaborn=0.13.2
-missingno>=0.5.2
+matplotlib==3.10.5
+seaborn==0.13.2
+missingno==0.5.2
 
 # Explicabilité
-shap=0.48.0
-lime>=0.2.0.1
+shap==0.48.0
+lime==0.2.0.1
 
 # MLOps
-mlflow>=3.3.1
+mlflow==3.3.1
 
 # API
-fastapi>=0.116.1
-uvicorn[standard]=0.35.0
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
 
 # Utilitaires
-jupyterlab>=4.4.6
-notebook=7.4.5
+jupyterlab==4.4.6
+notebook==7.4.5
 
 # Data
-kaggle>=1.7.4.5
+kaggle==1.7.4.5
 
 # Test
 pytest==8.3.3
