@@ -1,6 +1,6 @@
 # Core
 pandas==2.3.2
-numpy==2.2.6
+numpy==1.26.4
 scikit-learn==1.7.1
 lightgbm==4.6.0
 xgboost==3.0.4

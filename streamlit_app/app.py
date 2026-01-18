@@ -1,3 +1,20 @@
+"""Frontend Streamlit pour le projet de scoring (P7).
+
+Cette application appelle l'API de scoring (FastAPI) pour obtenir :
+- le schéma d’entrée attendu,
+- la santé/les métadonnées de l’API,
+- une probabilité de défaut et une prédiction binaire,
+- une explication locale (SHAP) des facteurs influençant la décision.
+
+Variables d’environnement / secrets attendus
+--------------------------------------------
+API_URL : str
+    URL racine de l’API (ex. https://mon-api.onrender.com).
+TOP_FEATURES : str, optionnel
+    Liste de colonnes « mises en avant » (séparées par des virgules) à afficher
+    en priorité dans le formulaire simple.
+"""
+
 import os, io, json
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -17,6 +34,20 @@ st.set_page_config(page_title="Projet 7 — Scoring", layout="centered")
 # Helpers "secrets" sûrs
 # -----------------------------------------------------------------------------
 def get_secret_env_first(key: str, default: str = "") -> str:
+    """Récupère une valeur de configuration depuis l'environnement ou Streamlit.
+
+    L’ordre de recherche est :
+    1) Variable d’environnement (si définie),
+    2) Fichiers `.streamlit/secrets.toml` (plusieurs chemins connus),
+    3) Valeur par défaut.
+
+    Args:
+        key: Nom de la clé à lire.
+        default: Valeur retournée si la clé n’est trouvée nulle part.
+
+    Returns:
+        La valeur trouvée (chaîne), éventuellement vide si absente partout.
+    """
     v = os.getenv(key)
     if v:
         return v.strip()
@@ -48,6 +79,16 @@ st.caption(f"API: {API_BASE}")
 # Fetch helpers
 # -----------------------------------------------------------------------------
 def fetch_json(url: str) -> Tuple[Dict, str|None]:
+    """Fait une requête HTTP GET et parse la réponse JSON.
+
+    Args:
+        url: URL à interroger.
+
+    Returns:
+        Un tuple `(payload, error)` où :
+        - `payload` est le dict JSON (ou `{}` en cas d’échec),
+        - `error` est `None` si tout va bien, sinon un message d’erreur.
+    """
     try:
         r = requests.get(url, timeout=15)
         r.raise_for_status()
@@ -57,12 +98,26 @@ def fetch_json(url: str) -> Tuple[Dict, str|None]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_schema():
+    """Récupère et met en cache la liste ordonnée des colonnes d’entrée.
+
+    Retourne les noms de colonnes exposés par l’API via `/schema`.
+
+    Returns:
+        Tuple `(columns, error)` :
+        - `columns`: liste des colonnes attendues (list[str]).
+        - `error`: message d’erreur éventuel (str | None).
+    """
     js, err = fetch_json(f"{API_BASE}/schema")
     cols = list(js.get("input_columns", [])) if js else []
     return cols, err
 
 @st.cache_data(ttl=120, show_spinner=False)
 def get_health():
+    """Récupère et met en cache les métadonnées de santé de l’API.
+
+    Returns:
+        Dict JSON renvoyé par `/health` (éventuellement vide si indisponible).
+    """
     js, _ = fetch_json(f"{API_BASE}/health")
     return js if js else {}
 
@@ -81,6 +136,18 @@ with st.expander("État API / Schéma", expanded=False):
 # Colonnes à privilégier
 # -----------------------------------------------------------------------------
 def pick_top_features(all_cols: List[str], k: int = 6) -> List[str]:
+    """Sélectionne k colonnes « mises en avant » pour le formulaire simple.
+
+    Si `TOP_FEATURES` est défini (env/secrets), on respecte cet ordre.
+    Sinon, on privilégie heuristiquement des colonnes financières/temps.
+
+    Args:
+        all_cols: Colonnes disponibles (peut être vide).
+        k: Nombre désiré de colonnes.
+
+    Returns:
+        Liste de `k` noms de colonnes (ou moins si indisponibles).
+    """
     if TOP_FEATURES_SECRET:
         want = [c.strip() for c in TOP_FEATURES_SECRET.split(",") if c.strip()]
         return [c for c in want if (not all_cols or c in all_cols)] or want
@@ -115,6 +182,14 @@ COL_LABELS = {
     "OWN_CAR_AGE": "Âge du véhicule (années)",
 }
 def fr_label(colname: str) -> str:
+    """Fournit un libellé lisible en français pour un nom de colonne.
+
+    Args:
+        colname: Nom brut de la feature.
+
+    Returns:
+        Libellé à afficher côté UI.
+    """
     return COL_LABELS.get(colname, colname.replace("_", " ").title())
 
 INCOME_TYPE_CHOICES = [
@@ -130,10 +205,37 @@ INCOME_TYPE_CHOICES = [
 INCOME_TYPE_FR = [fr for fr, _ in INCOME_TYPE_CHOICES]
 
 def _is_money(col: str) -> bool:
+    """Indique si une colonne représente un montant monétaire.
+
+    Heuristique basée sur la présence de 'AMT'.
+
+    Args:
+        col: Nom de la colonne.
+
+    Returns:
+        True si la colonne est assimilée à un montant, False sinon.
+    """
     cu = col.upper()
     return cu.startswith("AMT_") or cu.endswith("_AMT") or "AMT" in cu
 
 def render_input_for(colname: str):
+    """Affiche le widget Streamlit adapté à une colonne et retourne la valeur saisie.
+
+    Mapping principal :
+    - `DAYS_BIRTH` : saisie de date → conversion en jours négatifs,
+    - Montants (`AMT_*`) : `number_input` non négatif,
+    - `DAYS_*` : entier (peut être 0),
+    - ratios/scores : flottant,
+    - `NAME_INCOME_TYPE` : liste FR → valeur anglaise ou saisie libre,
+    - préfixe `NAME_` : texte,
+    - fallback : flottant générique.
+
+    Args:
+        colname: Nom de la colonne à rendre.
+
+    Returns:
+        Valeur saisie (float/str) ou `None` si laissée vide.
+    """
     label = fr_label(colname)
     cu = colname.upper()
 
@@ -178,6 +280,19 @@ def render_input_for(colname: str):
     return float(val) if val != 0.0 else None
 
 def call_api(endpoint: str, payload: Dict = None, method: str = "POST") -> Dict:
+    """Appelle un endpoint de l’API (GET/POST) et retourne le JSON.
+
+    Args:
+        endpoint: Chemin d’endpoint (ex. '/predict').
+        payload: Corps JSON pour les requêtes POST.
+        method: Verbe HTTP, 'GET' ou 'POST'.
+
+    Returns:
+        Dict JSON renvoyé par l’API.
+
+    Raises:
+        RuntimeError: En cas d’échec réseau ou HTTP.
+    """
     url = f"{API_BASE}{endpoint}"
     try:
         if method.upper() == "GET":
@@ -195,7 +310,14 @@ def call_api(endpoint: str, payload: Dict = None, method: str = "POST") -> Dict:
 tab_simple, tab_json, tab_csv = st.tabs(["🧩 Simple", "💻 JSON avancé", "📄 CSV (1 ligne)"])
 
 def render_decision(prob: float, thr: float):
-    """Carte de décision + jauge."""
+    """Affiche la décision binaire et une jauge à partir d’une probabilité.
+
+    La décision est 1 si `prob >= thr`, sinon 0 (convention rappelée dans l’UI).
+
+    Args:
+        prob: Probabilité de défaut estimée (0–1).
+        thr: Seuil métier appliqué (0–1).
+    """
     pred = int(prob >= thr)
     label = "✅ ACCEPTÉ" if pred == 0 else "❌ REFUSÉ"  # selon ta convention y=1 = défaut
     color = "#16a34a" if label.startswith("✅") else "#dc2626"
@@ -213,7 +335,17 @@ def render_decision(prob: float, thr: float):
     st.progress(min(max(prob, 0.0), 1.0))
 
 def render_shap_bar(contrib: Dict[str, float], top_k: int = 10):
-    """Barres horizontales des contributions (valeurs SHAP) top_k."""
+    """Trace un bar chart horizontal des contributions locales (SHAP).
+
+    Les contributions sont triées par valeur absolue et tronquées aux `top_k`.
+
+    Args:
+        contrib: Dictionnaire `{feature: shap_value}`.
+        top_k: Nombre maximum de facteurs à afficher.
+
+    Returns:
+        None (affichage Streamlit in-place).
+    """
     if not contrib:
         st.info("Explication indisponible pour cette observation.")
         return
