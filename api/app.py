@@ -6,7 +6,8 @@ Expose une API REST (FastAPI) pour :
 - obtenir le schéma d'entrée (`/schema`) ;
 - calculer une probabilité (`/predict_proba`) ;
 - produire une décision binaire avec seuil métier (`/predict`) ;
-- expliquer localement une prédiction via SHAP (`/explain`).
+- expliquer localement une prédiction via SHAP (`/explain`);
+- consulter un journal minimal des événements de prédiction (`/events/stats`, `/events/download`).
 
 Artefacts requis (dans MODEL_DIR, par défaut `models/`) :
 - `scoring_model.joblib` : sklearn Pipeline (preprocessor + estimator) ;
@@ -15,7 +16,8 @@ Artefacts requis (dans MODEL_DIR, par défaut `models/`) :
 
 Variables d’environnement utiles :
 - MODEL_DIR            : dossier des artefacts ;
-- FRONTEND_ORIGINS     : origines CORS autorisées, séparées par des virgules.
+- FRONTEND_ORIGINS     : origines CORS autorisées, séparées par des virgules ;
+- EVENTS_PATH          : chemin du fichier JSONL des événements (défaut: models/events.jsonl).
 
 Exceptions
 ----------
@@ -31,20 +33,25 @@ import numpy as np
 import json
 import os
 import shap
+import time
+import hashlib
+from pathlib import Path
+from typing import Dict, Any, List
 
 # -----------------------------
 # Chemins et artefacts modèle
 # -----------------------------
-MODEL_DIR    = os.getenv("MODEL_DIR", "models")
+MODEL_DIR = os.getenv("MODEL_DIR", "models")
 PIPELINE_PATH = os.path.join(MODEL_DIR, "scoring_model.joblib")
-THRESH_PATH   = os.path.join(MODEL_DIR, "decision_threshold.json")
-SCHEMA_PATH   = os.path.join(MODEL_DIR, "input_columns.json")
+THRESH_PATH = os.path.join(MODEL_DIR, "decision_threshold.json")
+SCHEMA_PATH = os.path.join(MODEL_DIR, "input_columns.json")
 
 # -----------------------------
 # Chargements
 # -----------------------------
 try:
-    pipe = joblib.load(PIPELINE_PATH)  # Pipeline(preprocessor, estimator)
+    # Pipeline scikit-learn attendu: steps "prep" et "clf" (au minimum)
+    pipe = joblib.load(PIPELINE_PATH)
 except Exception as e:
     raise RuntimeError(f"Impossible de charger {PIPELINE_PATH}: {e}")
 
@@ -65,18 +72,51 @@ except Exception:
     )
 
 # -----------------------------
+# Journalisation des événements (JSONL)
+# -----------------------------
+EVENTS_PATH = Path(os.getenv("EVENTS_PATH", os.path.join(MODEL_DIR, "events.jsonl")))
+EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def _model_version_from_pipe(pipeline) -> str:
+    """
+    Fabrique un identifiant court de 'version' à partir de la classe du classifieur
+    et de quelques hyperparamètres (hash MD5 tronqué).
+    """
+    try:
+        clf = pipeline.named_steps.get("clf", None)
+        name = clf.__class__.__name__ if clf is not None else "UnknownModel"
+        params = clf.get_params() if hasattr(clf, "get_params") else {}
+        key = f"{name}:{params.get('num_leaves','')}:{params.get('n_estimators','')}:{params.get('max_depth','')}"
+        return hashlib.md5(key.encode()).hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+MODEL_VERSION = _model_version_from_pipe(pipe)
+
+def _write_event(payload: Dict[str, Any]) -> None:
+    """
+    Ajoute un événement au journal JSONL. Tolérant aux erreurs disque: ne casse pas l'API.
+    """
+    try:
+        EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with EVENTS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[events] WARNING write failed: {e}")
+
+# -----------------------------
 # App FastAPI + CORS
 # -----------------------------
 app = FastAPI(title="Scoring API", version="1.0.0")
 
 # FRONTEND_ORIGINS peut contenir plusieurs origines séparées par des virgules.
-# Exemple Render (service API > Environment Variables):
+# Exemple Render :
 #   FRONTEND_ORIGINS = https://openclassrooms-projet7-scoring-streamlit.onrender.com
 origins_env = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_ORIGIN")
 if origins_env:
     ALLOW_ORIGINS = [o.strip().rstrip("/") for o in origins_env.split(",") if o.strip()]
 else:
-    # Fallback permissif (utile en dev). Pour la prod, mets la variable d'env ci-dessus.
+    # Fallback permissif en dev ; en prod, définir FRONTEND_ORIGINS.
     ALLOW_ORIGINS = ["*"]
 
 app.add_middleware(
@@ -91,12 +131,12 @@ app.add_middleware(
 # Schéma de requête
 # -----------------------------
 class PredictPayload(BaseModel):
-    features: dict
+    features: Dict[str, Any]
 
 # -----------------------------
 # Helpers
 # -----------------------------
-def _row_from_payload(payload: dict) -> pd.DataFrame:
+def _row_from_payload(payload: Dict[str, Any]) -> pd.DataFrame:
     """
     Construit une unique ligne d'entrée alignée sur le schéma attendu.
 
@@ -118,27 +158,43 @@ def _row_from_payload(payload: dict) -> pd.DataFrame:
     df = df[INPUT_COLUMNS]
     return df
 
+def _now_utc() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
 # -----------------------------
 # Endpoints
 # -----------------------------
 @app.get("/")
 def root():
+    """Endpoint d'accueil: liste des routes et métadonnées de base."""
     return {
         "message": "Scoring API en ligne",
-        "endpoints": ["/health", "/schema", "/predict_proba", "/predict", "/docs"],
+        "endpoints": [
+            "/health",
+            "/schema",
+            "/predict_proba",
+            "/predict",
+            "/explain",
+            "/events/stats",
+            "/events/download",
+            "/docs",
+        ],
         "allow_origins": ALLOW_ORIGINS,
         "model_dir": MODEL_DIR,
+        "model_version": MODEL_VERSION,
     }
 
 @app.get("/health")
 def health():
-    """Vérifie la disponibilité de l’API et retourne quelques métadonnées (seuil, nb de colonnes, etc.)."""
+    """Vérifie la disponibilité de l’API et retourne quelques métadonnées (seuil, nb de colonnes, version modèle…)."""
     return {
         "status": "ok",
         "model_dir": MODEL_DIR,
         "pipeline": os.path.basename(PIPELINE_PATH),
         "threshold": DECISION_THRESHOLD,
         "n_input_columns": len(INPUT_COLUMNS),
+        "model_version": MODEL_VERSION,
+        "events_path": str(EVENTS_PATH),
     }
 
 @app.get("/schema")
@@ -149,7 +205,7 @@ def schema():
 @app.post("/predict_proba")
 def predict_proba(payload: PredictPayload):
     """
-    Calcule la probabilité de défaut (classe 1).
+    Calcule la probabilité de défaut (classe positive = 1).
 
     Body
     ----
@@ -166,6 +222,18 @@ def predict_proba(payload: PredictPayload):
     try:
         X = _row_from_payload(payload.features)
         proba = pipe.predict_proba(X)[:, 1].item()
+
+        # Log événement
+        _write_event({
+            "ts_utc": _now_utc(),
+            "endpoint": "/predict_proba",
+            "probability": float(proba),
+            "prediction": int(proba >= DECISION_THRESHOLD),
+            "threshold": DECISION_THRESHOLD,
+            "model_version": MODEL_VERSION,
+            "features_keys": sorted(list(payload.features.keys())),
+        })
+
         return {"probability": float(proba)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur prédiction: {e}")
@@ -187,6 +255,18 @@ def predict(payload: PredictPayload):
         X = _row_from_payload(payload.features)
         proba = pipe.predict_proba(X)[:, 1].item()
         pred = int(proba >= DECISION_THRESHOLD)
+
+        # Log événement
+        _write_event({
+            "ts_utc": _now_utc(),
+            "endpoint": "/predict",
+            "probability": float(proba),
+            "prediction": int(pred),
+            "threshold": DECISION_THRESHOLD,
+            "model_version": MODEL_VERSION,
+            "features_keys": sorted(list(payload.features.keys())),
+        })
+
         return {"probability": float(proba), "prediction": pred, "threshold": DECISION_THRESHOLD}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur prédiction: {e}")
@@ -210,41 +290,38 @@ def explain(payload: PredictPayload):
     """
     try:
         X_row = _row_from_payload(payload.features)
-        # Récupère preprocessor + clf
         prep = pipe.named_steps.get("prep")
-        clf  = pipe.named_steps.get("clf")
+        clf = pipe.named_steps.get("clf")
 
         # Noms de features après transformation (OHE, etc.)
         try:
             feat_names = prep.get_feature_names_out()
         except Exception:
-            # fallback si indisponible
-            Xt = prep.transform(X_row)
-            feat_names = [f"f_{i}" for i in range(Xt.shape[1])]
+            Xt_tmp = prep.transform(X_row)
+            feat_names = [f"f_{i}" for i in range(Xt_tmp.shape[1])]
 
         # Transforme X pour l'explainer
         Xt = prep.transform(X_row)
 
-        # Explainer adapté
-        contrib = {}
+        contrib: Dict[str, float] = {}
         base_value = None
 
         if hasattr(clf, "predict_proba"):
-            # LGBM/Tree-based -> TreeExplainer
+            # Tree-based -> TreeExplainer en priorité
             try:
                 expl = shap.TreeExplainer(clf)
                 sv = expl.shap_values(Xt)
-                # shap >=0.41: sv est un object ; sinon liste [class0, class1]
-                # On prend classe 1 (défaut)
+                # shap<0.41 renvoie liste [class0, class1] ; versions récentes: objet
                 if isinstance(sv, list) and len(sv) > 1:
                     vals = sv[1][0]  # (n_features,)
                     base_value = float(expl.expected_value[1])
                 else:
-                    vals = np.array(sv.values[0]) if hasattr(sv, "values") else np.array(sv[0])
-                    base_value = float(sv.base_values[0]) if hasattr(sv, "base_values") else None
+                    # support des objets Explanation
+                    vals = np.array(getattr(sv, "values", sv))[0]
+                    base_value = float(getattr(sv, "base_values", [None])[0])
             except Exception:
                 # Secours: KernelExplainer (plus lent)
-                f = lambda Z: clf.predict_proba(Z)[:,1]
+                f = lambda Z: clf.predict_proba(Z)[:, 1]
                 bg = np.zeros((50, Xt.shape[1]))  # fond neutre
                 expl = shap.KernelExplainer(f, bg)
                 vals = expl.shap_values(Xt, nsamples=100)[0]
@@ -256,7 +333,7 @@ def explain(payload: PredictPayload):
         for name, v in zip(feat_names, np.asarray(vals).ravel()):
             contrib[str(name)] = float(v)
 
-        # Garde le top 20 par importance absolue
+        # Top 20 par importance absolue
         items = sorted(contrib.items(), key=lambda kv: abs(kv[1]), reverse=True)[:20]
         contrib_top = {k: v for k, v in items}
 
@@ -264,3 +341,33 @@ def explain(payload: PredictPayload):
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur d'explication: {e}")
+
+# -----------------------------
+# Endpoints événements (utiles démo/monitoring)
+# -----------------------------
+@app.get("/events/stats")
+def events_stats():
+    """
+    Retourne le nombre de lignes journalisées et la version du modèle.
+    """
+    try:
+        n = sum(1 for _ in EVENTS_PATH.open("r", encoding="utf-8"))
+    except FileNotFoundError:
+        n = 0
+    return {"events_file": str(EVENTS_PATH), "count": n, "model_version": MODEL_VERSION}
+
+@app.get("/events/download")
+def events_download(limit: int = 1000):
+    """
+    Retourne les dernières lignes du journal JSONL (max `limit`).
+    Paramètres
+    ----------
+    limit : int
+        Nombre maximum de lignes renvoyées (défaut: 1000).
+    """
+    try:
+        lines: List[str] = EVENTS_PATH.read_text(encoding="utf-8").splitlines()
+        tail = lines[-int(limit):] if limit and limit > 0 else lines
+        return {"events": [json.loads(l) for l in tail]}
+    except FileNotFoundError:
+        return {"events": []}
