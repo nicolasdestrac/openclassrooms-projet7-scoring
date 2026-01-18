@@ -9,7 +9,7 @@ Cette application appelle l'API de scoring (FastAPI) pour obtenir :
 Variables d’environnement / secrets attendus
 --------------------------------------------
 API_URL : str
-    URL racine de l’API (ex. https://mon-api.onrender.com).
+    URL racine de l’API (ex. https://openclassrooms-projet7-scoring-api.onrender.com/).
 TOP_FEATURES : str, optionnel
     Liste de colonnes « mises en avant » (séparées par des virgules) à afficher
     en priorité dans le formulaire simple.
