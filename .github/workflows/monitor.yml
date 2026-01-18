@@ -23,9 +23,9 @@ jobs:
         run: |
           mkdir -p artifacts/reports
           python -m src.monitor \
-            --ref data/raw/application_train.csv \
-            --cur data/raw/application_test.csv \
-            --target TARGET \
+            --ref data/ci/application_train.csv \
+            --cur data/ci/application_test.csv \
+            --target "$TARGET" \
             --out artifacts/reports \
             --sample 50000
 
