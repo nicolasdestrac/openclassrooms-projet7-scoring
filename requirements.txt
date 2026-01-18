@@ -15,14 +15,14 @@ shap==0.48.0
 lime==0.2.0.1
 
 # MLOps
-mlflow==3.3.1
+mlflow==3.5.0
 
 # API
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 
 # Utilitaires
-jupyterlab==4.4.6
+jupyterlab==4.4.8
 notebook==7.4.5
 
 # Data
