@@ -1,204 +1,308 @@
 # Implémentez un modèle de scoring (Projet 7 – OpenClassrooms)
 
-Pipeline de scoring de défaut de crédit basé sur le dataset **Home Credit Default Risk** (Kaggle).  
-Le projet comprend : acquisition des données, feature engineering, entraînement **CV** avec **LightGBM / Logistic Regression / RandomForest**, métriques métier **FN/FP** et suivi expérimental **MLflow (Databricks)**.
+[![Tests](https://img.shields.io/github/actions/workflow/status/nicolasdestrac/openclassrooms-projet7-scoring/ci-cd.yml?label=tests&branch=main)](https://github.com/nicolasdestrac/openclassrooms-projet7-scoring/actions)
+[![API Deploy](https://img.shields.io/badge/deploy-render-blue)](#)
+[![MLflow](https://img.shields.io/badge/tracking-mlflow-orange)](#)
+[![License](https://img.shields.io/badge/license-educational-lightgrey)](#)
+
+Pipeline de scoring de défaut de crédit basé sur **Home Credit Default Risk**.
+Le projet couvre : ingestion & features, entraînement **CV**, **métrique métier** (FN ≫ FP) et sélection de seuil, **tracking MLflow (Databricks)**, **API FastAPI** (Render), **UI Streamlit**, **CI/CD GitHub Actions**, et **monitoring Evidently**.
+
+---
+
+## 🔍 Vue d’ensemble
+
+- **Modèles** : Logistic Regression, RandomForest, **LightGBM (final)**
+- **Préprocess** : imputation médiane/most_frequent, OHE, normalisation, `log1p` sur colonnes monétaires, features dérivées (ratios, interactions `EXT_SOURCE_*`)
+- **Validation** : Stratified K-Fold (5 folds), OOF AUC + métriques par fold
+- **Score métier** : coût = `10×FN + 1×FP` → seuil optimal par grille
+- **Tracking** : MLflow (Databricks) — params, métriques, artefacts, modèle
+- **Serving** : API FastAPI (Render) + UI Streamlit
+- **CI/CD** : tests unitaires (pytest) → déploiement Render via **Deploy Hook**
+- **Monitoring** : rapport HTML Evidently + alerte JSON, exécutable en CI
+
+---
+
+## 📁 Arborescence
+
+```
+.
+├── conf/                 # config YAML (données, CV, coûts, modèles, MLflow…)
+├── models/               # artefacts (pipeline.joblib, seuil, schéma) [gitignored]
+├── artifacts/            # rapports data drift [gitignored]
+├── reports/              # rapports locaux [gitignored]
+├── scripts/              # utilitaires (ex: download Kaggle)
+├── src/
+│   ├── data.py           # chargement CSV
+│   ├── features.py       # feature engineering & préprocess
+│   ├── metrics.py        # métriques & score métier (coût, seuil optimal)
+│   ├── train.py          # CV, OOF, logging MLflow, sérialisation artefacts
+│   ├── tune.py           # tuning (grid/random) piloté par conf
+│   ├── monitor.py        # monitoring Evidently + (optionnel) logging MLflow
+├── streamlit_app/
+│   └── app.py            # application Streamlit (front démo)
+├── api/
+│   └── app.py            # API FastAPI (predict, predict_proba, explain)
+├── tests/                # pytest : métriques, API
+├── .github/workflows/
+│   └── ci-cd.yml         # jobs: test | deploy
+│   └── monitor.yml       # job: monitor (drift)
+├── requirements.txt
+└── README.md
+```
+
+---
 
 ## 🔧 Prérequis
 
-- Python 3.10
-- `pip`
-- Compte **Kaggle** (compétition “home-credit-default-risk” rejointe)
-- Accès **Databricks** (pour MLflow remote) ou autre backend MLflow si vous adaptez
+- Python **3.10**
+- Compte **Kaggle** (compétition *home-credit-default-risk*)
+- Accès **Databricks** (ou autre backend MLflow)
+- (Démo cloud) Compte **Render** pour l’API et la UI
 
-## 📦 Installation
+---
 
-    # Cloner
-    git clone git@github.com:nicolasdestrac/openclassrooms-projet7-scoring.git
-    cd openclassrooms-projet7-scoring  # (= OpenClassrooms/Projet_7)
+## ⚙️ Installation
 
-    # (optionnel) activer pyenv
-    pyenv local scoring_project7
-    python -V
+```bash
+git clone https://github.com/nicolasdestrac/openclassrooms-projet7-scoring.git
+cd openclassrooms-projet7-scoring
 
-    # Dépendances
-    pip install -r requirements.txt
+python -m pip install -U pip
+pip install -r requirements.txt
+```
 
-## 🔐 Variables d’environnement
+### Variables d’environnement (`.env`)
 
-Créez un fichier `.env` à la racine :
+```bash
+# Kaggle (si téléchargement auto)
+KAGGLE_USERNAME=...
+KAGGLE_KEY=...
 
-    # --- Kaggle ---
-    KAGGLE_USERNAME=ton_login_kaggle
-    KAGGLE_KEY=ta_clef_api_kaggle
+# MLflow (Databricks)
+MLFLOW_TRACKING_URI=databricks
+MLFLOW_EXPERIMENT=/Users/nicolas.destrac@gmail.com/projet7
+# DATABRICKS_HOST=https://<workspace>.cloud.databricks.com
+# DATABRICKS_TOKEN=<PAT>
 
-    # --- MLflow Remote (Databricks) ---
-    MLFLOW_TRACKING_URI=databricks
-    MLFLOW_EXPERIMENT=/Users/<ton_email>/projet7_scoring
+# API / CORS (front Streamlit autorisé)
+FRONTEND_ORIGINS=https://openclassrooms-projet7-scoring-streamlit.onrender.com
+```
 
-    # Option A : via variables d'env
-    # DATABRICKS_HOST=https://<ton-workspace>.cloud.databricks.com
-    # DATABRICKS_TOKEN=<PAT>
+Active-les dans la session :
 
-    # Option B : via CLI (recommandé)
-    # databricks auth login
+```bash
+set -a; source .env; set +a
+```
 
-Chargez-les dans la session :
-
-    set -a; source .env; set +a
+---
 
 ## ⬇️ Données
 
-Télécharger depuis Kaggle (≈700 Mo) :
+```bash
+# via script
+./scripts/download_data.sh
 
-    ./scripts/download_data.sh
-    # => dépose les CSV dans data/raw/
+# ou manuellement
+kaggle competitions download -c home-credit-default-risk -p data/raw
+unzip -o data/raw/home-credit-default-risk.zip -d data/raw
+```
 
-Ou manuellement :
-
-    kaggle competitions download -c home-credit-default-risk -p data/raw
-    unzip -o data/raw/home-credit-default-risk.zip -d data/raw
-
-💡 Les dossiers volumineux (`data/`, `models/`, `mlruns/`, etc.) sont **ignorés** par git (voir `.gitignore`).
-
-## ⚙️ Configuration (conf/params.yaml)
-
-Exemple :
-
-    data:
-      train_csv: "data/raw/application_train.csv"
-      test_csv:  "data/raw/application_test.csv"
-
-    cv:
-      n_splits: 5
-      shuffle: true
-      random_state: 42
-      early_stopping_rounds: 200
-      log_period: 50
-
-    cost:               # pondération métier (FN >>> FP)
-      fn: 10.0
-      fp: 1.0
-      threshold_grid: 501
-
-    model:
-      type: "lgbm"      # "lgbm" | "logreg" | "rf"
-      lgbm:
-        n_estimators: 5000
-        learning_rate: 0.03
-        num_leaves: 64
-        min_child_samples: 100
-        subsample: 0.8
-        colsample_bytree: 0.8
-        reg_lambda: 1.0
-        reg_alpha: 0.1
-        class_weight: "balanced"
-        n_jobs: -1
-      logreg:
-        penalty: "l2"
-        solver: "saga"
-        max_iter: 2000
-        class_weight: "balanced"
-        n_jobs: -1
-      rf:
-        n_estimators: 500
-        max_depth: null
-        min_samples_split: 2
-        min_samples_leaf: 1
-        n_jobs: -1
-        class_weight: "balanced"
-
-    mlflow:
-      tracking_uri_env: "MLFLOW_TRACKING_URI"
-      default_tracking_uri: "databricks"
-      experiment_env: "MLFLOW_EXPERIMENT"
-      default_experiment: "/Users/<ton_email>/projet7_scoring"
-
-    artifacts:
-      models_dir: "models"
-      reports_dir: "reports"
-
-**Changer de modèle** = modifier `model.type` (`lgbm`, `logreg`, `rf`) et ajuster ses hyperparamètres.
-
-## 🏃‍♂️ Entraînement
-
-    set -a; source .env; set +a
-    python -m src.train --config conf/params.yaml
-
-Pendant le run :
-- Cross-validation **StratifiedKFold** (5 folds)
-- Logs détaillés LightGBM (AUC, early stopping)
-- Affichage **AUC par fold** et temps
-- Calcul du **seuil optimal** selon les coûts `FN/FP`
-- **MLflow** loggue : AUC OOF, coût, seuil*, per-fold metrics, artefacts (modèle, threshold…)
-
-En fin de run, la console affiche les liens MLflow (expérience & run).
-
-## 📁 Structure
-
-    .
-    ├── conf/
-    │   └── params.yaml
-    ├── scripts/
-    │   └── download_data.sh
-    ├── src/
-    │   ├── data.py            # chargement CSV
-    │   ├── features.py        # preprocessing / feature eng
-    │   ├── metrics.py         # AUC, coût, recherche de seuil
-    │   └── train.py           # pipeline CV + MLflow
-    ├── data/                  # (ignored) raw/ ...
-    ├── models/                # (ignored) artefacts locaux
-    ├── reports/               # (ignored) rapports locaux
-    ├── requirements.txt
-    └── README.md
-
-## 📊 Métriques & seuil métier
-
-- **AUC OOF** : performance globale CV.  
-- **Coût** : `fn * (#FN) + fp * (#FP)` sur une grille de seuils ∈ [0,1].  
-- **Seuil*** : seuil qui **minimise** ce coût.  
-Tout est loggué dans MLflow (metrics + params + artefacts).
-
-## 🧪 Suivi expérimental (MLflow)
-
-Le script configure MLflow pour **Databricks** et gère proprement l’ouverture/fermeture des runs :
-- `mlflow.set_tracking_uri("databricks")`
-- `mlflow.set_experiment("/Users/<email>/projet7_scoring")`
-- `mlflow.log_params / log_metrics / log_artifacts`
-
-Comparez facilement les runs et téléchargez les artefacts depuis l’UI Databricks.
-
-## 🧹 Bonnes pratiques Git
-
-- Branches : `feat/<...>`, `fix/<...>`, `chore/<...>`
-- Ouvrir une PR vers `main` :
-
-      gh pr create --fill --base main --head feat/ma-feature
-      gh pr merge <num> --squash --delete-branch
-
-- Ne jamais committer : `.env`, `data/`, `models/`, `mlruns/`, `mlflow.db`, gros CSV.
-
-## 🛠️ Débogage (FAQ)
-
-- **Kaggle: `Could not find kaggle.json`**  
-  → Renseigner `KAGGLE_USERNAME` et `KAGGLE_KEY` dans `.env` **ou** placer `~/.kaggle/kaggle.json` (chmod 600). Vérifier que vous avez **rejoint** la compétition.
-
-- **MLflow Databricks auth**  
-  → `databricks auth login` **ou** exporter `DATABRICKS_HOST` + `DATABRICKS_TOKEN`.
-
-- **LightGBM: “Do not support special JSON characters in feature name.”**  
-  → Les features sont renommées en noms **safe** dans `train.py` (DataFrame + `make_lgbm_safe`). Si vous ajoutez des features, évitez guillemets/virgules/retours ligne.
-
-- **sklearn ConvergenceWarning (logreg)**  
-  → Augmenter `max_iter`, garder `solver="saga"`, veiller au scaling (géré dans le preprocessor).
-
-- **“Run is already active” (MLflow)**  
-  → Le script ferme maintenant les runs “orphelins”. En dernier recours : `mlflow.end_run()`.
-
-## 📈 Roadmap (idées)
-
-- Hyperparam tuning (Optuna/MLflow)
-- API d’inférence (FastAPI)
-- Monitoring data drift (Evidently)
-- Dashboard des métriques
+> Dossiers volumineux (`data/`, `models/`, `reports/`, `mlruns/`) ignorés par git.
 
 ---
+
+## 🧪 Configuration (extrait `conf/params.yaml`)
+
+```yaml
+data:
+  train_csv: data/raw/application_train.csv
+  test_csv:  data/raw/application_test.csv
+
+cv:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  early_stopping_rounds: 200
+
+cost:
+  fn: 10.0
+  fp: 1.0
+  threshold_grid: 501
+
+model:
+  type: lgbm                  # lgbm | logreg | rf
+  lgbm:
+    n_estimators: 5000
+    learning_rate: 0.03
+    num_leaves: 64
+    max_depth: 5
+    reg_alpha: 0.5
+    reg_lambda: 0.1
+    subsample: 0.6
+    class_weight: balanced
+  logreg:
+    solver: saga
+    max_iter: 2000
+    class_weight: balanced
+  rf:
+    n_estimators: 600
+    class_weight: balanced_subsample
+
+mlflow:
+  tracking_uri_env: MLFLOW_TRACKING_URI
+  default_tracking_uri: databricks
+  experiment_env: MLFLOW_EXPERIMENT
+  default_experiment: /Users/nicolas.destrac@gmail.com/projet7
+
+artifacts:
+  models_dir: models
+  reports_dir: reports
+```
+
+---
+
+## 🏃 Entraînement & artefacts
+
+```bash
+set -a; source .env; set +a
+python -m src.train --config conf/params.yaml
+```
+
+Génère dans `models/` :
+
+- `scoring_model.joblib` : **Pipeline**(preprocessor, estimator)
+- `decision_threshold.json` : `{"threshold": <float>}`
+- `input_columns.json` : colonnes d’entrée attendues (pour l’API)
+
+Et loggue dans **MLflow** :
+params, AUC OOF, coûts/seuils, métriques par fold, artefacts (importances, matrices), modèle + signature.
+
+---
+
+## 🔌 API FastAPI
+
+**Local :**
+```bash
+uvicorn api.app:app --host 0.0.0.0 --port 8000 --reload
+# Docs: http://localhost:8000/docs
+```
+
+**Endpoints :**
+
+- `GET /schema` → liste des colonnes d’entrée
+- `POST /predict_proba` → `{"probability": float}`
+- `POST /predict` → probabilité + décision binaire via seuil métier
+- `POST /explain` → top-20 contributions SHAP locales (si compatible)
+
+**Exemple de payload** :
+```json
+{
+  "features": {
+    "AMT_CREDIT": 100000.0,
+    "AMT_ANNUITY": 12000.0
+  }
+}
+```
+
+---
+
+## 🖥️ UI Streamlit
+
+```bash
+streamlit run streamlit_app/app.py
+```
+
+La UI appelle l’API (URL configurable) et affiche probabilité, décision et SHAP local.
+
+---
+
+## ✅ CI/CD GitHub Actions
+
+Fichier : `.github/workflows/ci-cd.yml`
+
+- **test** (PR & `main`)
+  - Installe les deps
+  - Lance `pytest -q`
+- **deploy** (branche `main`, **optionnel**)
+  - `needs: test`
+  - déclenche **Render Deploy Hook** si `RENDER_DEPLOY_HOOK` est défini
+- **monitor** (manuel ou planifié)
+  - exécute `python -m src.monitor`
+  - publie le rapport Evidently en artefact
+  - **échoue** le job si `alert.json` indique du drift > seuil
+
+> Sur Render, l’auto-deploy peut être **OFF** : le **deploy hook** devient le seul déclencheur (contrôlé par les tests).
+
+---
+
+## 📉 Monitoring (Evidently)
+
+**Local** :
+```bash
+python -m src.monitor \
+  --ref data/raw/application_train.csv \
+  --cur data/raw/application_test.csv \
+  --out artifacts/reports \
+  --sample 50000 \
+  --mlflow
+```
+
+**Options** :
+- `--schema models/input_columns.json` : n’analyser que les features servies
+- `--simulate --money-col AMT_CREDIT --money-factor 1.10 --cat-col NAME_INCOME_TYPE --cat-rate 0.25`
+- `--drift-share-threshold 0.30` : alerte si > 30% de colonnes driftées
+
+**Sorties** :
+- `evidently_data_drift_report.html`
+- `evidently_data_drift_summary.json`
+- `alert.json` (clé `alert: true|false` + raison)
+
+---
+
+## 🧪 Tests
+
+```bash
+pytest -q
+```
+
+- **tests/test_metrics.py** : AUC, coût métier, seuil optimal
+- **tests/test_api.py** : `/schema`, `/predict_proba`, `/predict` (happy paths & erreurs)
+
+---
+
+## 📊 Interprétabilité
+
+- **Globale** : importances (gain/impurity pour LGBM) — logguées MLflow
+- **Locale** : endpoint `/explain` (SHAP, top-20)
+
+---
+
+## 🔐 Bonnes pratiques & reproductibilité
+
+- Seeds fixés (CV + LGBM)
+- Sérialisation **Pipeline sklearn** + signature d’entrée (MLflow)
+- Schéma contrôlé via `input_columns.json`
+- Versions figées dans `requirements.txt`
+
+---
+
+## 🚀 Liens
+
+- **Dépôt GitHub** : https://github.com/nicolasdestrac/openclassrooms-projet7-scoring
+- **MLflow (Databricks)** : `/Users/nicolas.destrac@gmail.com/projet7`
+- **API Render** : https://openclassrooms-projet7-scoring-api.onrender.com/
+- **UI Streamlit** : https://openclassrooms-projet7-scoring-streamlit.onrender.com
+
+---
+
+## 🛠️ Dépannage (tips rapides)
+
+- **Databricks** : vérifier `DATABRICKS_HOST` / `DATABRICKS_TOKEN` pour le tracking MLflow
+- **Render** : si auto-deploy OFF, utiliser le **Deploy Hook** (secret GitHub `RENDER_DEPLOY_HOOK`)
+
+---
+
+## 📜 Licence
+
+Projet pédagogique — usage non commercial.
