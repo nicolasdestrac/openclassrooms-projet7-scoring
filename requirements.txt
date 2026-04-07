@@ -15,7 +15,7 @@ shap==0.48.0
 lime==0.2.0.1
 
 # MLOps
-mlflow==3.5.0
+mlflow==3.11.0rc1
 
 # API
 fastapi==0.116.1
